@@ -49,17 +49,22 @@ HOW TO ADAPT THIS FOR A NEW GAME:
 
 """
 
-import os
 import re
-import time
-from dotenv import load_dotenv
-from google import genai
-from google.genai import types
+import sys
+from pathlib import Path
 
 
-# Load API key from .env file
-load_dotenv()
-client = genai.Client(api_key=os.getenv("gemeni_api_key"))
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from agent.agent import Agent, DEFAULT_MODEL, build_system_prompt, create_gemini_client
+from agent.tracing import TraceLogger, parse_react_response, snapshot_game_state
+
+
+client = create_gemini_client()
+GAME_MODEL = DEFAULT_MODEL
+GAME_NAME = "prisoners_dilemma"
 
 
 # =============================================================================
@@ -73,16 +78,7 @@ client = genai.Client(api_key=os.getenv("gemeni_api_key"))
 # we force it to wait for real tool results instead of hallucinating them.
 # =============================================================================
 
-REACT_SYSTEM_PROMPT = """
-You run in a loop of Thought, Action, PAUSE, Observation.
-At the end of the loop you output a Decision.
-
-Use Thought to reason about the current game state.
-Use Action to call one of your available tools, then return PAUSE.
-Observation will be the result of that tool.
-
-IMPORTANT: You MUST always start your response with 'Thought:' before any Action.
-
+GAME_SYSTEM_PROMPT = """
 Your available actions are:
 
 get_game_state:
@@ -120,91 +116,7 @@ Observation: Move accepted.
 Decision: cooperate
 """.strip()
 
-
-# =============================================================================
-# SECTION 2: AGENT CLASS
-# =============================================================================
-# The Agent class wraps the Gemini API and maintains conversation history.
-#
-# Why do we keep message history?
-# The LLM has no memory between API calls by default. By appending every
-# message to self.messages and sending the full list each time, the agent
-# can "remember" what happened earlier in the same game round.
-#
-# This is called "in-context memory" it's stored in the prompt itself,
-# . It resets every round (a new Agent is created per round
-# in agent_loop), which is intentional: each round starts fresh.
-# =============================================================================
-
-class Agent:
-    """
-    A LLM agent that maintains conversation history within a session.
-
-    The agent wraps the Gemini API and handles the message formatting
-    required by the Gemini SDK (roles: "user" and "model", with "parts").
-
-    Attributes:
-        client: The Gemini API client used to make requests.
-        system: The system prompt that defines the agent's behavior.
-        messages: List of conversation turns accumulated during this session.
-                  Each entry is {"role": "user"|"model", "parts": [{"text": ...}]}
-    """
-
-    def __init__(self, client, system):
-        """
-        Initialize the agent with an API client and a system prompt.
-
-        Args:
-            client: Initialized Gemini API client (from genai.Client).
-            system: System prompt string defining agent behavior and available tools.
-        """
-        self.client = client
-        self.system = system
-        self.messages = []
-
-    def __call__(self, message):
-        """
-        Send a message to the agent and get a response.
-
-        This appends the user message to history, calls the LLM,
-        then appends the LLM's response to history before returning it.
-
-        Args:
-            message: The user message string (e.g. an Observation or initial query).
-
-        Returns:
-            The LLM's response as a string.
-        """
-        if message:
-            self.messages.append({"role": "user", "parts": [{"text": message}]})
-            result = self.execute()
-            self.messages.append({"role": "model", "parts": [{"text": result}]})
-            return result
-
-    def execute(self):
-        """
-        Make a single API call to Gemini with the current message history.
-
-        The system prompt is passed separately via GenerateContentConfig,
-        not as part of the conversation history. This is the Gemini SDK's
-        preferred pattern for system instructions.
-
-        Returns:
-            The LLM's response text as a string.
-
-        Raises:
-            ServerError: If the API is unavailable (e.g. rate limit hit).
-                         The agent_loop handles retries.
-        """
-        config = types.GenerateContentConfig(
-            system_instruction=self.system
-        )
-        completion = self.client.models.generate_content(
-            model="gemini-2.5-flash",  
-            contents=self.messages,
-            config=config
-        )
-        return completion.text
+REACT_SYSTEM_PROMPT = build_system_prompt(GAME_SYSTEM_PROMPT, game_name=GAME_NAME)
 
 
 # =============================================================================
@@ -446,6 +358,7 @@ def run_game(game: PrisonersDilemma, max_iterations: int = 10):
     # Define which tool names the agent is allowed to call.
     # If the agent hallucinates a tool name, it gets an error Observation.
     tools = ['get_game_state', 'get_legal_moves', 'make_move']
+    logger = TraceLogger(GAME_NAME)
 
     print("=" * 50)
     print("PRISONER'S DILEMMA — Agent vs Always Defect Computer")
@@ -454,12 +367,14 @@ def run_game(game: PrisonersDilemma, max_iterations: int = 10):
     # ── OUTER LOOP: one iteration per game round ──────────────────────────────
     while not game.is_over():
         print(f"\n── Round {game.current_round} ──")
+        logger.start_round(game.current_round, snapshot_game_state(game))
 
         # Fresh agent each round — clears conversation history.
         # This is intentional: we don't want the agent's round 1 reasoning
         # to fill up the context window by round 5.
         # (In Reflexion, we'll pass a memory summary instead.)
-        agent = Agent(client=client, system=REACT_SYSTEM_PROMPT)
+        system_prompt = build_system_prompt(GAME_SYSTEM_PROMPT, game_name=GAME_NAME)
+        agent = Agent(client=client, system=system_prompt)
 
         # Start the round with the current game state as context
         next_prompt = build_game_context(game)
@@ -470,26 +385,34 @@ def run_game(game: PrisonersDilemma, max_iterations: int = 10):
             i += 1
 
             # Send the prompt to the agent, get its Thought + Action
-            result = agent(next_prompt)
+            prompt = next_prompt
+            state_before = snapshot_game_state(game)
+            result = agent(prompt)
+            parsed = parse_react_response(result)
             print(result)
 
             # ── PARSE: did the agent request a tool call? ─────────────────────
             # We look for the pattern "Action: tool_name: argument"
             # re.IGNORECASE handles "action:" vs "Action:" variations
-            if "PAUSE" in result and "Action" in result:
-                action_match = re.findall(
-                    r"Action: ([a-z_]+): (.+)",
-                    result,
-                    re.IGNORECASE
-                )
-
-                if not action_match:
+            if parsed["has_pause"] and ("Action" in result or parsed["action"]):
+                if parsed["parse_error"] or not parsed["action"]:
                     # Agent used the wrong format — give it a helpful error
-                    next_prompt = "Observation: Could not parse your Action. Format must be: Action: tool_name: argument"
+                    obs = "Could not parse your Action. Format must be: Action: tool_name: argument"
+                    next_prompt = f"Observation: {obs}"
+                    logger.record_step(
+                        game.current_round,
+                        i,
+                        prompt,
+                        result,
+                        parsed,
+                        observation=obs,
+                        state_before=state_before,
+                        state_after=snapshot_game_state(game),
+                    )
                     continue
 
-                chosen_tool = action_match[0][0].strip()
-                arg = action_match[0][1].strip()
+                chosen_tool = parsed["action"].strip()
+                arg = parsed["argument"].strip()
 
                 # ── DISPATCH: call the right tool ─────────────────────────────
                 if chosen_tool == 'get_game_state':
@@ -500,9 +423,26 @@ def run_game(game: PrisonersDilemma, max_iterations: int = 10):
 
                 elif chosen_tool == 'make_move':
                     # make_move ends the round — break out of inner loop
+                    round_number = game.current_round
                     obs = game.make_move(arg)
                     next_prompt = f"Observation: {obs}"
                     print(next_prompt)
+                    logger.record_step(
+                        round_number,
+                        i,
+                        prompt,
+                        result,
+                        parsed,
+                        observation=obs,
+                        state_before=state_before,
+                        state_after=snapshot_game_state(game),
+                    )
+                    logger.record_round_result(round_number, {
+                        "observation": obs,
+                        "history": game.history[-1] if game.history else None,
+                        "agent_score": game.agent_score,
+                        "opponent_score": game.opponent_score,
+                    })
                     break  # round is done, move to next round in outer loop
 
                 else:
@@ -511,14 +451,46 @@ def run_game(game: PrisonersDilemma, max_iterations: int = 10):
 
                 next_prompt = f"Observation: {obs}"
                 print(next_prompt)
+                logger.record_step(
+                    game.current_round,
+                    i,
+                    prompt,
+                    result,
+                    parsed,
+                    observation=obs,
+                    state_before=state_before,
+                    state_after=snapshot_game_state(game),
+                )
                 continue
 
             # ── TERMINAL: agent output a Decision without calling make_move ───
             # This shouldn't normally happen — the agent should always call
             # make_move — but we handle it gracefully just in case.
-            if "Decision" in result:
+            if parsed["decision"]:
+                logger.record_step(
+                    game.current_round,
+                    i,
+                    prompt,
+                    result,
+                    parsed,
+                    state_before=state_before,
+                    state_after=snapshot_game_state(game),
+                )
                 print("Agent reached Decision without calling make_move. Ending round.")
                 break
+
+            obs = "No valid Action or Decision found. Use Action: tool_name: argument."
+            next_prompt = f"Observation: {obs}"
+            logger.record_step(
+                game.current_round,
+                i,
+                prompt,
+                result,
+                parsed,
+                observation=obs,
+                state_before=state_before,
+                state_after=snapshot_game_state(game),
+            )
 
     # ── GAME SUMMARY ──────────────────────────────────────────────────────────
     print("\n" + "=" * 50)
@@ -535,6 +507,14 @@ def run_game(game: PrisonersDilemma, max_iterations: int = 10):
     print("\nMove history (your move, opponent move):")
     for i, (agent_mv, opp_mv) in enumerate(game.history, 1):
         print(f"  Round {i}: You={agent_mv:<10} Opponent={opp_mv}")
+
+    logger.finish({
+        "agent_score": game.agent_score,
+        "opponent_score": game.opponent_score,
+        "history": game.history,
+    })
+    trace_path = logger.save()
+    print(f"\nTrace saved to: {trace_path}")
 
 
 # =============================================================================

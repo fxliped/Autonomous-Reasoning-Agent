@@ -49,18 +49,24 @@ CLASS:   Statistics C163/C263 — Generative Data Science, UCLA
 =============================================================================
 """
 
-import os
 import re
+import sys
 import time
-from dotenv import load_dotenv
-from google import genai
-from google.genai import types
+from pathlib import Path
 
-load_dotenv()
-client = genai.Client(api_key=os.getenv("gemeni_api_key"))
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from agent.agent import Agent, build_system_prompt, create_gemini_client
+from agent.tracing import TraceLogger, parse_react_response, snapshot_game_state
+
+
+client = create_gemini_client()
 
 # Model to use — swap to gemini-2.5-flash-lite if hitting rate limits
 GAME_MODEL = "gemini-2.5-flash"
+GAME_NAME = "hunger_games"
 
 
 # =============================================================================
@@ -70,15 +76,8 @@ GAME_MODEL = "gemini-2.5-flash"
 # The game changes, the brain doesn't.
 # =============================================================================
 
-REACT_SYSTEM_PROMPT = """
-You run in a loop of Thought, Action, PAUSE, Observation.
-At the end of the loop you output a Decision.
-
-IMPORTANT: You MUST always start your response with 'Thought:' before any Action.
-
-Use Thought to reason about the current game state and what the human is likely to do.
-Use Action to call one of your available tools, then return PAUSE.
-Observation will be the result of that tool.
+GAME_SYSTEM_PROMPT = """
+When reasoning, consider what the human is likely to do based on HP, round number, and recent history.
 
 Your available actions are:
 
@@ -113,45 +112,8 @@ Decision: attack=3 defend=5 heal=2
 """.strip()
 
 
-# =============================================================================
-# SECTION 2: AGENT CLASS (unchanged from base version)
-# =============================================================================
+REACT_SYSTEM_PROMPT = build_system_prompt(GAME_SYSTEM_PROMPT, game_name=GAME_NAME)
 
-class Agent:
-    """
-    Stateful LLM agent maintaining conversation history within a round.
-    Identical to the Prisoner's Dilemma agent — see react_game_agent.py.
-    """
-    def __init__(self, client, system, model=GAME_MODEL):
-        self.client = client
-        self.system = system
-        self.model = model
-        self.messages = []
-
-    def __call__(self, message):
-        if message:
-            self.messages.append({"role": "user", "parts": [{"text": message}]})
-            result = self.execute()
-            self.messages.append({"role": "model", "parts": [{"text": result}]})
-            return result
-
-    def execute(self):
-        """Call Gemini API with retry logic for rate limit handling."""
-        config = types.GenerateContentConfig(system_instruction=self.system)
-        for attempt in range(3):
-            try:
-                completion = self.client.models.generate_content(
-                    model=self.model,
-                    contents=self.messages,
-                    config=config
-                )
-                return completion.text
-            except Exception as e:
-                if attempt < 2:
-                    print(f"  [API busy, retrying in 5s... ({attempt+1}/3)]")
-                    time.sleep(5)
-                else:
-                    raise e
 
 
 # =============================================================================
@@ -474,6 +436,7 @@ def run_hunger_games(game: HungerGames, max_iterations: int = 10):
         max_iterations: Safety cap on agent reasoning steps per round.
     """
     tools = ['get_game_state', 'get_legal_moves', 'make_move']
+    logger = TraceLogger(GAME_NAME)
 
     print("\n" + "=" * 50)
     print("  ⚔️  HUNGER GAMES — Human vs AI Agent  ⚔️")
@@ -487,10 +450,12 @@ def run_hunger_games(game: HungerGames, max_iterations: int = 10):
         print(f"\n\n{'='*50}")
         print(f"  ROUND {game.current_round} of {game.rounds}")
         print(f"{'='*50}")
+        logger.start_round(game.current_round, snapshot_game_state(game))
 
         # ── Step 1: Agent decides (hidden from human) ─────────────────────
         print("\n  🤖 Agent is thinking...")
-        agent = Agent(client=client, system=REACT_SYSTEM_PROMPT, model=GAME_MODEL)
+        system_prompt = build_system_prompt(GAME_SYSTEM_PROMPT, game_name=GAME_NAME)
+        agent = Agent(client=client, system=system_prompt, model=GAME_MODEL)
         next_prompt = build_game_context(game)
 
         agent_attack = agent_defend = agent_heal = None
@@ -499,22 +464,33 @@ def run_hunger_games(game: HungerGames, max_iterations: int = 10):
 
         while i < max_iterations:
             i += 1
-            result = agent(next_prompt)
+            prompt = next_prompt
+            state_before = snapshot_game_state(game)
+            result = agent(prompt)
+            parsed = parse_react_response(result)
 
             # Capture reasoning for the reveal later
-            if "Thought:" in result:
-                thought_match = re.search(r'Thought:(.*?)(?=Action:|$)', result, re.DOTALL)
-                if thought_match:
-                    agent_reasoning += thought_match.group(1).strip() + " "
+            if parsed["thought"]:
+                agent_reasoning += parsed["thought"] + " "
 
-            if "PAUSE" in result and "Action" in result:
-                action_match = re.findall(r'Action: ([a-z_]+): (.+)', result, re.IGNORECASE)
-                if not action_match:
-                    next_prompt = "Observation: Could not parse action. Format: Action: tool_name: argument"
+            if parsed["has_pause"] and ("Action" in result or parsed["action"]):
+                if parsed["parse_error"] or not parsed["action"]:
+                    obs = "Could not parse action. Format: Action: tool_name: argument"
+                    next_prompt = f"Observation: {obs}"
+                    logger.record_step(
+                        game.current_round,
+                        i,
+                        prompt,
+                        result,
+                        parsed,
+                        observation=obs,
+                        state_before=state_before,
+                        state_after=snapshot_game_state(game),
+                    )
                     continue
 
-                chosen_tool = action_match[0][0].strip()
-                arg = action_match[0][1].strip()
+                chosen_tool = parsed["action"].strip()
+                arg = parsed["argument"].strip()
 
                 if chosen_tool == 'get_game_state':
                     obs = game.get_game_state()
@@ -528,6 +504,16 @@ def run_hunger_games(game: HungerGames, max_iterations: int = 10):
                         obs = f"Move submitted: attack={agent_attack} defend={agent_defend} heal={agent_heal}"
                         next_prompt = f"Observation: {obs}"
                         print(f"  ✅ Agent has locked in its move (hidden until reveal)")
+                        logger.record_step(
+                            game.current_round,
+                            i,
+                            prompt,
+                            result,
+                            parsed,
+                            observation=obs,
+                            state_before=state_before,
+                            state_after=snapshot_game_state(game),
+                        )
                         break
                     except ValueError as e:
                         obs = f"Invalid move: {e}. Try again."
@@ -536,15 +522,64 @@ def run_hunger_games(game: HungerGames, max_iterations: int = 10):
                     obs = f"Unknown tool '{chosen_tool}'. Available: {tools}"
 
                 next_prompt = f"Observation: {obs}"
+                logger.record_step(
+                    game.current_round,
+                    i,
+                    prompt,
+                    result,
+                    parsed,
+                    observation=obs,
+                    state_before=state_before,
+                    state_after=snapshot_game_state(game),
+                )
                 continue
 
-            if "Decision" in result:
+            if parsed["decision"]:
+                logger.record_step(
+                    game.current_round,
+                    i,
+                    prompt,
+                    result,
+                    parsed,
+                    state_before=state_before,
+                    state_after=snapshot_game_state(game),
+                )
                 break
+
+            obs = "No valid Action or Decision found. Use Action: tool_name: argument."
+            next_prompt = f"Observation: {obs}"
+            logger.record_step(
+                game.current_round,
+                i,
+                prompt,
+                result,
+                parsed,
+                observation=obs,
+                state_before=state_before,
+                state_after=snapshot_game_state(game),
+            )
 
         # Fallback if agent failed to make a valid move
         if agent_attack is None:
             print("  ⚠️  Agent failed to decide — defaulting to balanced allocation")
             agent_attack, agent_defend, agent_heal = 4, 4, 2
+            logger.record_step(
+                game.current_round,
+                i + 1,
+                "fallback",
+                "Agent failed to make a valid move.",
+                {
+                    "thought": "",
+                    "action": "fallback_move",
+                    "argument": "attack=4 defend=4 heal=2",
+                    "has_pause": False,
+                    "decision": None,
+                    "parse_error": "Agent did not submit a valid make_move action.",
+                },
+                observation="Defaulted to attack=4 defend=4 heal=2",
+                state_before=snapshot_game_state(game),
+                state_after=snapshot_game_state(game),
+            )
 
         # ── Step 2: Human inputs their move ───────────────────────────────
         human_attack, human_defend, human_heal = game.get_human_input()
@@ -554,6 +589,7 @@ def run_hunger_games(game: HungerGames, max_iterations: int = 10):
             agent_attack, agent_defend, agent_heal,
             human_attack, human_defend, human_heal
         )
+        logger.record_round_result(round_result["round"], round_result)
 
         # ── Step 4: Reveal results + agent reasoning ───────────────────────
         print_round_result(round_result, game.agent_hp, game.human_hp)
@@ -594,6 +630,14 @@ def run_hunger_games(game: HungerGames, max_iterations: int = 10):
         print(f"  {h['round']:>6}  {h['human_attack']:>10} {h['human_defend']:>10} {h['human_heal']:>10}  "
               f"{h['agent_attack']:>10} {h['agent_defend']:>10} {h['agent_heal']:>10}  "
               f"{h['human_hp_after']:>9} {h['agent_hp_after']:>9}")
+
+    logger.finish({
+        "human_hp": game.human_hp,
+        "agent_hp": game.agent_hp,
+        "history": game.history,
+    })
+    trace_path = logger.save()
+    print(f"\n  Trace saved to: {trace_path}")
 
 
 # =============================================================================
