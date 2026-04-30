@@ -9,7 +9,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from agent.agent import DEFAULT_MODEL, create_gemini_client
+from agent.agent import create_client
 from agent.tracing import judge_trace, write_judge_result
 
 
@@ -23,8 +23,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--model",
-        default=DEFAULT_MODEL,
-        help=f"Gemini model to use for judging. Default: {DEFAULT_MODEL}",
+        default=None,
+        help="Model to use for judging (default: provider default).",
     )
     parser.add_argument(
         "--no-reflection",
@@ -39,7 +39,8 @@ def main() -> None:
     args = parser.parse_args()
 
     trace_path = Path(args.trace_path)
-    client = create_gemini_client()
+    client = create_client()
+    print(f"[Judge] Using provider: {client.provider}  model: {args.model or client.default_model}")
     result = judge_trace(
         trace_path,
         client=client,

@@ -58,14 +58,12 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from agent.agent import Agent, build_system_prompt, create_gemini_client
+from agent.agent import Agent, build_system_prompt, create_client
 from agent.tracing import TraceLogger, parse_react_response, snapshot_game_state
 
 
-client = create_gemini_client()
-
-# Model to use — swap to gemini-2.5-flash-lite if hitting rate limits
-GAME_MODEL = "gemini-2.5-flash"
+client = create_client()
+GAME_MODEL = None  # uses client.default_model at runtime
 GAME_NAME = "hunger_games"
 
 
@@ -356,8 +354,7 @@ def build_game_context(game: HungerGames) -> str:
         history_text = "RECENT HISTORY: No rounds played yet."
 
     return f"""
-You are playing Hunger Games against a human opponent. Win at all costs. but also dont lose the game 
-in the spirit of winning - stay rational. The goal is to win but also not to lose. 
+You are playing Hunger Games against a human opponent. Your goal is to maximize your HP advantage at game end. Stay rational — do not sacrifice long-term survival for a single-round gamble.
 
 RULES:
 - Each round, both players secretly allocate exactly {game.energy} energy across attack, defend, heal.

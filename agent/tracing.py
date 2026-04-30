@@ -1,5 +1,7 @@
 """Tracer-style logging and judging for ReAct game agents."""
 
+from __future__ import annotations
+
 import json
 import re
 import uuid
@@ -7,9 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from google.genai import types
-
-from agent.agent import DEFAULT_MODEL, ROOT_DIR, append_reflection
+from agent.agent import ROOT_DIR, append_reflection
 
 
 TRACES_DIR = ROOT_DIR / "traces"
@@ -156,10 +156,10 @@ class TraceLogger:
 def judge_trace(
     trace_path: str | Path,
     client,
-    model: str = DEFAULT_MODEL,
+    model: str | None = None,
     append_to_reflections: bool = True,
 ) -> dict[str, Any]:
-    """Ask the existing Gemini client to localize reasoning failures in a trace."""
+    """Ask the LLM client to localize reasoning failures in a trace."""
     path = Path(trace_path)
     trace = json.loads(path.read_text(encoding="utf-8"))
     trace_text = json.dumps(trace, indent=2)
@@ -186,15 +186,8 @@ Trace:
 {trace_text}
 """.strip()
 
-    completion = client.models.generate_content(
-        model=model,
-        contents=[{"role": "user", "parts": [{"text": prompt}]}],
-        config=types.GenerateContentConfig(
-            system_instruction="Return strict JSON. Do not include markdown."
-        ),
-    )
-
-    raw = completion.text.strip()
+    system = "Return strict JSON. Do not include markdown."
+    raw = client.complete(system, [{"role": "user", "content": prompt}], model).strip()
     try:
         result = json.loads(raw)
     except json.JSONDecodeError:

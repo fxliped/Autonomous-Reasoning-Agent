@@ -1,0 +1,85 @@
+{
+  "schema_version": "1.0",
+  "run_id": "20260430_094422",
+  "game_name": "are_you_the_traitor",
+  "started_at": "2026-04-30T09:44:22",
+  "steps": [
+    {
+      "event": "start_round",
+      "round": 1,
+      "state_before": {
+        "active": [
+          "Player_1",
+          "Player_2",
+          "Player_3",
+          "Player_4"
+        ],
+        "eliminated": []
+      }
+    },
+    {
+      "event": "start_round",
+      "round": 2,
+      "state_before": {
+        "active": [
+          "Player_1",
+          "Player_3",
+          "Player_4"
+        ],
+        "eliminated": [
+          [
+            "Player_2",
+            "healer"
+          ]
+        ]
+      }
+    }
+  ],
+  "round_results": [
+    {
+      "round": 1,
+      "result": {
+        "eliminated": "Player_2",
+        "role_revealed": "healer",
+        "vote_counts": {
+          "Player_2": 3,
+          "Player_4": 1
+        },
+        "game_over": false
+      }
+    },
+    {
+      "round": 2,
+      "result": {
+        "eliminated": "Player_4",
+        "role_revealed": "traitor",
+        "vote_counts": {
+          "Player_4": 2,
+          "Player_1": 1
+        },
+        "game_over": true
+      }
+    }
+  ],
+  "final_result": {
+    "winner": "village",
+    "eliminated": [
+      [
+        "Player_2",
+        "healer"
+      ],
+      [
+        "Player_4",
+        "traitor"
+      ]
+    ],
+    "roles": {
+      "Player_1": "hero",
+      "Player_2": "healer",
+      "Player_3": "healer",
+      "Player_4": "traitor"
+    }
+  },
+  "judge": null,
+  "finished_at": "2026-04-30T09:48:17"
+}

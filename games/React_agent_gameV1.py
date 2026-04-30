@@ -58,12 +58,11 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from agent.agent import Agent, DEFAULT_MODEL, build_system_prompt, create_gemini_client
-from agent.tracing import TraceLogger, parse_react_response, snapshot_game_state
+from agent.agent import Agent, build_system_prompt, create_client
+from agent.tracing import TraceLogger, parse_react_response, snapshot_game_state, judge_trace, write_judge_result
 
 
-client = create_gemini_client()
-GAME_MODEL = DEFAULT_MODEL
+client = create_client()
 GAME_NAME = "prisoners_dilemma"
 
 
@@ -116,9 +115,6 @@ Observation: Move accepted.
 Decision: cooperate
 """.strip()
 
-REACT_SYSTEM_PROMPT = build_system_prompt(GAME_SYSTEM_PROMPT, game_name=GAME_NAME)
-
-
 # =============================================================================
 # SECTION 3: GAME ENVIRONMENT — PRISONER'S DILEMMA
 # =============================================================================
@@ -164,15 +160,27 @@ class PrisonersDilemma:
         ("defect",    "defect"):    (1, 1),  # mutual defection — worst collective outcome
     }
 
-    def __init__(self, rounds=5):
+    OPPONENT_STRATEGIES = [
+        "grim_trigger",    # cooperates until agent defects once, then defects forever
+        "tit_for_tat",     # copies agent's last move; cooperates first
+        "pavlov",          # win-stay lose-shift: repeat if it paid off, else switch
+        "generous_tft",    # like tit_for_tat but forgives defection ~10% of the time
+        "always_defect",
+        "always_cooperate",
+    ]
+
+    def __init__(self, rounds=5, opponent_strategy="grim_trigger"):
         """
         Set up a new game.
 
         Args:
             rounds: How many rounds to play. Default is 5.
-                    More rounds give cooperative strategies more time to emerge.
+            opponent_strategy: One of OPPONENT_STRATEGIES. Default is 'grim_trigger'.
         """
+        if opponent_strategy not in self.OPPONENT_STRATEGIES:
+            raise ValueError(f"Unknown strategy '{opponent_strategy}'. Choose from {self.OPPONENT_STRATEGIES}")
         self.rounds = rounds
+        self.opponent_strategy = opponent_strategy
         self.current_round = 1
         self.agent_score = 0
         self.opponent_score = 0
@@ -210,27 +218,54 @@ class PrisonersDilemma:
 
     def opponent_move(self):
         """
-        Determine what the opponent plays this round.
+        Determine what the opponent plays this round using the configured strategy.
 
-        Currently implements TIT-FOR-TAT: cooperate on round 1,
-        then copy whatever the agent did last round.
-
-        TIT-FOR-TAT is famous in game theory — it won Robert Axelrod's
-        1980 Prisoner's Dilemma tournament and is considered the most
-        robust strategy in iterated games.
-
-        To test different opponent strategies, change the logic here:
-            - Always defect:  return 'defect'
-            - Always cooperate: return 'cooperate'
-            - Random: import random; return random.choice(['cooperate', 'defect'])
-
-        Returns:
-            'cooperate' or 'defect'
+        Strategies:
+          grim_trigger  — cooperates until agent defects once, then defects forever
+          tit_for_tat   — cooperates round 1, then mirrors agent's last move
+          pavlov        — win-stay lose-shift (repeat if points >= 3, else switch)
+          generous_tft  — tit_for_tat but forgives defection ~10% of the time
+          always_defect — always defects
+          always_cooperate — always cooperates
         """
-        #if not self.history:
-            #return 'cooperate'          # round 1: tit-for-tat opens cooperatively
-       # return self.history[-1][0]      # copy agent's last move
-        return 'defect'                  # Currently set up to defect always (you can change this to test different games)
+        import random as _random
+
+        strategy = self.opponent_strategy
+        if strategy == "always_defect":
+            return "defect"
+
+        if strategy == "always_cooperate":
+            return "cooperate"
+
+        if strategy == "tit_for_tat":
+            if not self.history:
+                return "cooperate"
+            return self.history[-1][0]
+
+        if strategy == "grim_trigger":
+            if not self.history:
+                return "cooperate"
+            if any(agent_mv == "defect" for agent_mv, _ in self.history):
+                return "defect"
+            return "cooperate"
+
+        if strategy == "pavlov":
+            if not self.history:
+                return "cooperate"
+            last_agent, last_opp = self.history[-1]
+            opp_pts_last = self.PAYOFFS[(last_agent, last_opp)][1]
+            if opp_pts_last >= 3:
+                return last_opp          # stay
+            return "defect" if last_opp == "cooperate" else "cooperate"  # shift
+
+        if strategy == "generous_tft":
+            if not self.history:
+                return "cooperate"
+            if self.history[-1][0] == "defect" and _random.random() > 0.10:
+                return "defect"
+            return "cooperate"
+
+        return "cooperate"  # fallback
     
     
     
@@ -341,7 +376,7 @@ Now make your decision using the Thought/Action/PAUSE loop.
 # The outer while loop handles one GAME (all rounds).
 # =============================================================================
 
-def run_game(game: PrisonersDilemma, max_iterations: int = 10):
+def run_game(game: PrisonersDilemma, max_iterations: int = 10, auto_judge: bool = False):
     """
     Run a full game between the ReAct agent and the game environment.
 
@@ -360,8 +395,9 @@ def run_game(game: PrisonersDilemma, max_iterations: int = 10):
     tools = ['get_game_state', 'get_legal_moves', 'make_move']
     logger = TraceLogger(GAME_NAME)
 
+    strategy_label = game.opponent_strategy.replace("_", " ").title()
     print("=" * 50)
-    print("PRISONER'S DILEMMA — Agent vs Always Defect Computer")
+    print(f"PRISONER'S DILEMMA — Agent vs {strategy_label}")
     print("=" * 50)
 
     # ── OUTER LOOP: one iteration per game round ──────────────────────────────
@@ -512,9 +548,29 @@ def run_game(game: PrisonersDilemma, max_iterations: int = 10):
         "agent_score": game.agent_score,
         "opponent_score": game.opponent_score,
         "history": game.history,
+        "opponent_strategy": game.opponent_strategy,
     })
     trace_path = logger.save()
     print(f"\nTrace saved to: {trace_path}")
+
+    if auto_judge:
+        print("\n" + "─" * 50)
+        print("  TRACER JUDGE — localizing reasoning failures...")
+        print("─" * 50)
+        judge_result = judge_trace(trace_path, client=client, append_to_reflections=True)
+        write_judge_result(trace_path, judge_result)
+        failures = judge_result.get("failures", [])
+        if failures:
+            for f in failures:
+                print(f"  Round {f.get('round','?')} Step {f.get('step','?')}: [{f.get('category','?')}]")
+                print(f"    Reason : {f.get('explanation','')}")
+                print(f"    Fix    : {f.get('suggested_fix','')}")
+        else:
+            print("  No failures found.")
+        reflection = judge_result.get("reflection", "")
+        if reflection:
+            print(f"\n  Reflection saved → agent/reflections/{GAME_NAME}.md")
+            print(f"  Lesson: {reflection}")
 
 
 # =============================================================================
@@ -525,7 +581,11 @@ def run_game(game: PrisonersDilemma, max_iterations: int = 10):
 # =============================================================================
 
 if __name__ == "__main__":
-    # Create a 5-round game and run it
-    # Try changing rounds=10 for longer games where cooperation can emerge
-    game = PrisonersDilemma(rounds=5)
-    run_game(game, max_iterations=10)
+    import argparse
+    parser = argparse.ArgumentParser(description="Prisoner's Dilemma: Agent vs scripted opponent")
+    parser.add_argument("--strategy", default="grim_trigger", choices=PrisonersDilemma.OPPONENT_STRATEGIES)
+    parser.add_argument("--rounds", type=int, default=5)
+    parser.add_argument("--judge", action="store_true", help="Auto-run Tracer judge after game ends")
+    args = parser.parse_args()
+    game = PrisonersDilemma(rounds=args.rounds, opponent_strategy=args.strategy)
+    run_game(game, max_iterations=10, auto_judge=args.judge)
