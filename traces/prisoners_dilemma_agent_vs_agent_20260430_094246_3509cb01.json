@@ -1,0 +1,183 @@
+{
+  "schema_version": "1.0",
+  "run_id": "20260430_094246",
+  "game_name": "prisoners_dilemma_agent_vs_agent",
+  "started_at": "2026-04-30T09:42:46",
+  "steps": [
+    {
+      "event": "start_round",
+      "round": 1,
+      "state_before": {
+        "score_a": 0,
+        "score_b": 0,
+        "history": []
+      }
+    },
+    {
+      "event": "start_round",
+      "round": 2,
+      "state_before": {
+        "score_a": 3,
+        "score_b": 3,
+        "history": [
+          [
+            "cooperate",
+            "cooperate"
+          ]
+        ]
+      }
+    },
+    {
+      "event": "start_round",
+      "round": 3,
+      "state_before": {
+        "score_a": 4,
+        "score_b": 4,
+        "history": [
+          [
+            "cooperate",
+            "cooperate"
+          ],
+          [
+            "defect",
+            "defect"
+          ]
+        ]
+      }
+    },
+    {
+      "event": "start_round",
+      "round": 4,
+      "state_before": {
+        "score_a": 4,
+        "score_b": 9,
+        "history": [
+          [
+            "cooperate",
+            "cooperate"
+          ],
+          [
+            "defect",
+            "defect"
+          ],
+          [
+            "cooperate",
+            "defect"
+          ]
+        ]
+      }
+    },
+    {
+      "event": "start_round",
+      "round": 5,
+      "state_before": {
+        "score_a": 5,
+        "score_b": 10,
+        "history": [
+          [
+            "cooperate",
+            "cooperate"
+          ],
+          [
+            "defect",
+            "defect"
+          ],
+          [
+            "cooperate",
+            "defect"
+          ],
+          [
+            "defect",
+            "defect"
+          ]
+        ]
+      }
+    }
+  ],
+  "round_results": [
+    {
+      "round": 1,
+      "result": {
+        "move_a": "cooperate",
+        "move_b": "cooperate",
+        "pts_a": 3,
+        "pts_b": 3,
+        "score_a": 3,
+        "score_b": 3
+      }
+    },
+    {
+      "round": 2,
+      "result": {
+        "move_a": "defect",
+        "move_b": "defect",
+        "pts_a": 1,
+        "pts_b": 1,
+        "score_a": 4,
+        "score_b": 4
+      }
+    },
+    {
+      "round": 3,
+      "result": {
+        "move_a": "cooperate",
+        "move_b": "defect",
+        "pts_a": 0,
+        "pts_b": 5,
+        "score_a": 4,
+        "score_b": 9
+      }
+    },
+    {
+      "round": 4,
+      "result": {
+        "move_a": "defect",
+        "move_b": "defect",
+        "pts_a": 1,
+        "pts_b": 1,
+        "score_a": 5,
+        "score_b": 10
+      }
+    },
+    {
+      "round": 5,
+      "result": {
+        "move_a": "defect",
+        "move_b": "defect",
+        "pts_a": 1,
+        "pts_b": 1,
+        "score_a": 6,
+        "score_b": 11
+      }
+    }
+  ],
+  "final_result": {
+    "score_a": 6,
+    "score_b": 11,
+    "history": [
+      [
+        "cooperate",
+        "cooperate"
+      ],
+      [
+        "defect",
+        "defect"
+      ],
+      [
+        "cooperate",
+        "defect"
+      ],
+      [
+        "defect",
+        "defect"
+      ],
+      [
+        "defect",
+        "defect"
+      ]
+    ],
+    "winner": "agent_b"
+  },
+  "judge": null,
+  "finished_at": "2026-04-30T09:43:59"
+}
