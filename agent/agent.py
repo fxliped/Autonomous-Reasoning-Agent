@@ -5,9 +5,11 @@ from __future__ import annotations
 import os
 import time
 from pathlib import Path
+from typing import Optional
 
 from dotenv import load_dotenv
 
+load_dotenv()
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 REFLECTIONS_DIR = Path(__file__).resolve().parent / "reflections"
@@ -25,8 +27,27 @@ Observation will be the result of that tool.
 
 
 # =============================================================================
+# PROVIDER DETECTION
+# =============================================================================
+
+def detect_provider() -> tuple[str, str]:
+    """
+    Auto-detect which LLM provider to use based on available API keys.
+    OpenAI takes priority. Falls back to Gemini if no OpenAI key is found.
+    Returns (provider_name, default_model_name).
+    """
+    if os.getenv("OPENAI_API_KEY"):
+        return "openai", LLMClient.OPENAI_DEFAULT_MODEL
+    gemini_key = os.getenv("gemeni_api_key") or os.getenv("GEMINI_API_KEY")
+    if gemini_key:
+        return "gemini", LLMClient.GEMINI_DEFAULT_MODEL
+    raise ValueError(
+        "No API key found. Set OPENAI_API_KEY (preferred) or GEMINI_API_KEY in your .env file."
+    )
+
+
+# =============================================================================
 # PROVIDER-AGNOSTIC LLM CLIENT
-# Tries OpenAI first (OPENAI_API_KEY), then falls back to Gemini.
 # =============================================================================
 
 class LLMClient:
@@ -41,30 +62,17 @@ class LLMClient:
     GEMINI_DEFAULT_MODEL = "gemini-2.5-flash"
 
     def __init__(self):
-        load_dotenv()
-        openai_key = os.getenv("OPENAI_API_KEY")
-        gemini_key = os.getenv("gemeni_api_key") or os.getenv("GEMINI_API_KEY")
+        self.provider, self.default_model = detect_provider()
+        self._build_client()
 
-        if openai_key:
-            try:
-                from openai import OpenAI
-                self._openai = OpenAI(api_key=openai_key)
-                self.provider = "openai"
-                self.default_model = self.OPENAI_DEFAULT_MODEL
-            except ImportError:
-                raise ImportError("openai package not installed. Run: pip install openai")
-        elif gemini_key:
-            try:
-                from google import genai
-                self._gemini = genai.Client(api_key=gemini_key)
-                self.provider = "gemini"
-                self.default_model = self.GEMINI_DEFAULT_MODEL
-            except ImportError:
-                raise ImportError("google-genai package not installed.")
-        else:
-            raise ValueError(
-                "No API key found. Set OPENAI_API_KEY (preferred) or GEMINI_API_KEY in your .env file."
-            )
+    def _build_client(self):
+        if self.provider == "openai":
+            from openai import OpenAI
+            self._openai = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        elif self.provider == "gemini":
+            from google import genai
+            key = os.getenv("gemeni_api_key") or os.getenv("GEMINI_API_KEY")
+            self._gemini = genai.Client(api_key=key)
 
     def complete(self, system: str, messages: list[dict], model: str | None = None) -> str:
         """
@@ -115,14 +123,9 @@ def create_client() -> LLMClient:
     return LLMClient()
 
 
-# Keep for backward compatibility with Warren's existing game files
 def create_gemini_client() -> LLMClient:
+    """Backward-compatibility alias for create_client()."""
     return create_client()
-
-
-# Default model constant — reflects whichever provider is active at import time.
-# Prefer reading client.default_model at runtime over this module-level constant.
-DEFAULT_MODEL = LLMClient.OPENAI_DEFAULT_MODEL  # overridden at runtime by client.default_model
 
 
 # =============================================================================
@@ -192,18 +195,32 @@ def build_system_prompt(
 # =============================================================================
 
 class Agent:
-    """Stateful LLM agent that maintains conversation history within a round."""
+    """
+    Stateful LLM agent that maintains conversation history within a round.
+    Create a new instance each round to keep context short, or call reset().
+    """
 
-    def __init__(self, client: LLMClient, system: str, model: str | None = None):
+    def __init__(
+        self,
+        client: LLMClient,
+        system: str,
+        model: str | None = None,
+        name: str = "Agent",
+    ):
         self.client = client
         self.system = system
         self.model = model  # None → use client.default_model
-        self.messages: list[dict] = []  # [{"role": "user"|"assistant", "content": "..."}]
+        self.name = name
+        self.messages: list[dict] = []
 
-    def __call__(self, message: str):
+    def __call__(self, message: str) -> Optional[str]:
         if not message:
             return None
         self.messages.append({"role": "user", "content": message})
         result = self.client.complete(self.system, self.messages, self.model)
         self.messages.append({"role": "assistant", "content": result})
         return result
+
+    def reset(self):
+        """Clear conversation history (use between rounds or phases)."""
+        self.messages = []

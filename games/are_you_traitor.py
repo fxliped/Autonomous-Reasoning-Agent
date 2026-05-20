@@ -1,5 +1,5 @@
 """
-Are You the Traitor? — multi-agent social deduction game.
+Are You the Traitor? — Multi-agent social deduction game.
 
 Roles:
   Hero   (1): Village-aligned. Goal: identify and eliminate the Traitor.
@@ -20,16 +20,16 @@ Run:
     python games/are_you_traitor.py --players 5 --rounds 4
 """
 
-import random
 import sys
+import random
 from pathlib import Path
 
-ROOT_DIR = Path(__file__).resolve().parents[1]
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
-from agent.agent import Agent, create_client
-from agent.tracing import TraceLogger, parse_react_response
+from agent.agent import Agent, build_system_prompt, create_client  # noqa: E402
+from agent.tracing import TraceLogger, parse_react_response  # noqa: E402
 
 GAME_NAME = "are_you_the_traitor"
 
@@ -38,6 +38,14 @@ GAME_NAME = "are_you_the_traitor"
 # GAME ENVIRONMENT
 # =============================================================================
 
+_ROLE_CONFIGS: dict[int, list[str]] = {
+    3: ["hero", "traitor", "healer"],
+    4: ["hero", "traitor", "healer", "healer"],
+    5: ["hero", "traitor", "healer", "healer", "healer"],
+    6: ["hero", "traitor", "healer", "healer", "healer", "healer"],
+}
+
+
 class AreYouTheTraitor:
     """
     Game environment for Are You the Traitor?
@@ -45,77 +53,81 @@ class AreYouTheTraitor:
     """
 
     def __init__(self, num_players: int = 4, max_rounds: int = 3):
-        if not 3 <= num_players <= 6:
+        if num_players not in _ROLE_CONFIGS:
             raise ValueError(f"num_players must be 3–6, got {num_players}")
         self.num_players = num_players
         self.max_rounds = max_rounds
         self.current_round = 1
 
-        roles = ["hero", "traitor"] + ["healer"] * (num_players - 2)
-        random.shuffle(roles)
-        self.players = {f"Player_{i+1}": roles[i] for i in range(num_players)}
-        self.active_players = list(self.players.keys())
-        self.eliminated = []          # list of (player_name, role)
-        self.discussion_log = []      # {round, player, statement}
-        self.vote_log = []            # {round, voter, vote}
-        self.winner = None            # 'village' or 'traitor'
+        role_list = _ROLE_CONFIGS[num_players].copy()
+        random.shuffle(role_list)
+        self.players: list[str] = [f"Player_{i + 1}" for i in range(num_players)]
+        self.roles: dict[str, str] = dict(zip(self.players, role_list))
+
+        self.active_players: list[str] = list(self.players)
+        self.eliminated: list[tuple[str, str]] = []  # (player, role)
+        self.discussion_log: list[dict] = []         # {round, player, statement}
+        self.vote_log: list[dict] = []               # {round, voter, vote}
+        self.winner: str | None = None               # "village" | "traitor"
 
     def get_public_state(self) -> str:
-        """What all players can see: round, active players, eliminated, recent statements."""
-        elim_str = (
+        elim = (
             ", ".join(f"{p} ({r})" for p, r in self.eliminated)
             if self.eliminated else "None"
         )
-        recent = self.discussion_log[-self.num_players:] if self.discussion_log else []
-        stmts = (
-            "\n".join(f"  {s['player']}: {s['statement']}" for s in recent)
+        prev_round = self.current_round - 1
+        recent = [d for d in self.discussion_log if d["round"] == prev_round]
+        if not recent:
+            recent = [d for d in self.discussion_log if d["round"] == self.current_round]
+        disc = (
+            "\n".join(f'  {d["player"]}: "{d["statement"]}"' for d in recent)
             if recent else "  No statements yet."
         )
         return (
             f"Round {self.current_round}/{self.max_rounds}\n"
             f"Active players: {', '.join(self.active_players)}\n"
-            f"Eliminated: {elim_str}\n"
-            f"Most recent statements:\n{stmts}"
+            f"Eliminated: {elim}\n"
+            f"Most recent statements:\n{disc}"
         )
 
-    def get_history(self) -> str:
-        """Full discussion and vote history across all rounds."""
+    def get_full_history(self) -> str:
         if not self.discussion_log and not self.vote_log:
             return "No history yet."
         lines = []
         for r in range(1, self.current_round + 1):
-            stmts = [s for s in self.discussion_log if s["round"] == r]
+            stmts = [d for d in self.discussion_log if d["round"] == r]
             votes = [v for v in self.vote_log if v["round"] == r]
             if stmts:
                 lines.append(f"--- Round {r} Statements ---")
-                for s in stmts:
-                    lines.append(f"  {s['player']}: {s['statement']}")
+                for d in stmts:
+                    lines.append(f'  {d["player"]}: "{d["statement"]}"')
             if votes:
                 lines.append(f"--- Round {r} Votes ---")
                 for v in votes:
-                    lines.append(f"  {v['voter']} → {v['vote']}")
-        return "\n".join(lines)
+                    lines.append(f'  {v["voter"]} → {v["vote"]}')
+        return "\n".join(lines) if lines else "No history yet."
 
-    def add_statement(self, player: str, statement: str):
+    def record_statement(self, player: str, statement: str):
         self.discussion_log.append({
             "round": self.current_round,
             "player": player,
-            "statement": statement,
+            "statement": statement.strip('"').strip(),
         })
 
-    def add_vote(self, voter: str, vote: str):
+    def record_vote(self, voter: str, vote: str):
         self.vote_log.append({
             "round": self.current_round,
             "voter": voter,
-            "vote": vote,
+            "vote": vote.strip(),
         })
 
-    def count_votes(self) -> tuple[str, dict]:
-        """Count votes from this round. Ties broken randomly."""
+    def tally_votes(self) -> tuple[str, dict[str, int]]:
         round_votes = [v for v in self.vote_log if v["round"] == self.current_round]
         counts: dict[str, int] = {}
         for v in round_votes:
-            counts[v["vote"]] = counts.get(v["vote"], 0) + 1
+            target = v["vote"]
+            if target in self.active_players:
+                counts[target] = counts.get(target, 0) + 1
         if not counts:
             return random.choice(self.active_players), counts
         max_votes = max(counts.values())
@@ -124,19 +136,33 @@ class AreYouTheTraitor:
 
     def eliminate(self, player: str) -> tuple[str, bool]:
         """Remove a player. Returns (role_revealed, game_over)."""
-        role = self.players[player]
+        role = self.roles[player]
         self.eliminated.append((player, role))
         self.active_players.remove(player)
+
         if role == "traitor":
             self.winner = "village"
             return role, True
         if role == "hero":
             self.winner = "traitor"
             return role, True
+        if not any(self.roles[p] == "traitor" for p in self.active_players):
+            self.winner = "village"
+            return role, True
+        if len(self.active_players) <= 1:
+            self.winner = "traitor"
+            return role, True
+
+        self.current_round += 1
         return role, False
 
-    def get_role(self, player: str) -> str:
-        return self.players[player]
+    def is_over(self) -> bool:
+        if self.winner:
+            return True
+        if self.current_round > self.max_rounds:
+            self.winner = "traitor"
+            return True
+        return False
 
 
 # =============================================================================
@@ -165,8 +191,7 @@ Vote to eliminate a player. You cannot vote for yourself.
 
 
 def build_role_system_prompt(game: AreYouTheTraitor, player: str) -> str:
-    """Build the role-specific ReAct system prompt for this player."""
-    role = game.get_role(player)
+    role = game.roles[player]
 
     if role == "hero":
         role_block = f"""
@@ -255,7 +280,7 @@ Decision: vote Player_4
 # =============================================================================
 
 def get_statement_prompt(game: AreYouTheTraitor, player: str) -> str:
-    role = game.get_role(player)
+    role = game.roles[player]
     reminders = {
         "hero":    "You are the HERO. Identify the Traitor through your public statement.",
         "traitor": "You are the TRAITOR. Blend in and deflect suspicion. Do NOT reveal your role.",
@@ -273,7 +298,7 @@ Use your tools to review history, then make a strategic 1-2 sentence statement v
 
 
 def get_vote_prompt(game: AreYouTheTraitor, player: str) -> str:
-    role = game.get_role(player)
+    role = game.roles[player]
     reminders = {
         "hero":    "You are the HERO. Vote to eliminate who you believe is the Traitor.",
         "traitor": "You are the TRAITOR. Vote strategically — eliminate a threat or frame someone.",
@@ -295,7 +320,7 @@ Review the history, reason carefully, then cast your vote using the vote action.
 
 
 # =============================================================================
-# REACT LOOP FOR ONE PLAYER IN ONE PHASE
+# REACT LOOP — ONE PLAYER, ONE PHASE
 # =============================================================================
 
 def run_react_for_player(
@@ -328,15 +353,14 @@ def run_react_for_player(
                 obs = game.get_public_state()
 
             elif chosen_tool == "review_history":
-                obs = game.get_history()
+                obs = game.get_full_history()
 
             elif chosen_tool == "make_statement" and phase == "statement":
                 statement = arg.strip('"').strip("'").strip()
                 if statement:
-                    game.add_statement(player, statement)
+                    game.record_statement(player, statement)
                     result_value = statement
-                    next_prompt = "Observation: Statement recorded."
-                    agent(next_prompt)
+                    agent("Observation: Statement recorded.")
                     break
                 else:
                     obs = "Statement cannot be empty. Try: make_statement: your text here"
@@ -345,10 +369,9 @@ def run_react_for_player(
                 others = [p for p in game.active_players if p != player]
                 vote_target = next((p for p in others if p.lower() in arg.lower()), None)
                 if vote_target:
-                    game.add_vote(player, vote_target)
+                    game.record_vote(player, vote_target)
                     result_value = vote_target
-                    next_prompt = f"Observation: Vote cast for {vote_target}."
-                    agent(next_prompt)
+                    agent(f"Observation: Vote cast for {vote_target}.")  # has placeholder
                     break
                 else:
                     obs = f"Could not parse vote. Choose from: {', '.join(others)}"
@@ -365,24 +388,24 @@ def run_react_for_player(
             if phase == "vote":
                 vote_target = next((p for p in others if p.lower() in decision.lower()), None)
                 if vote_target:
-                    game.add_vote(player, vote_target)
+                    game.record_vote(player, vote_target)
                     result_value = vote_target
             elif phase == "statement" and not result_value:
-                game.add_statement(player, decision)
+                game.record_statement(player, decision)
                 result_value = decision
             break
 
-    # Fallback
+    # Fallbacks
     if result_value is None:
         others = [p for p in game.active_players if p != player]
         if phase == "vote":
             result_value = random.choice(others)
-            game.add_vote(player, result_value)
-            print(f"  ⚠️  {player} failed to vote — randomly chose {result_value}")
+            game.record_vote(player, result_value)
+            print(f"  ⚠  {player} failed to vote — randomly chose {result_value}")
         else:
             result_value = "I am observing carefully before making any accusations."
-            game.add_statement(player, result_value)
-            print(f"  ⚠️  {player} failed to make a statement — using fallback")
+            game.record_statement(player, result_value)
+            print(f"  ⚠  {player} failed to make a statement — using fallback")
 
     return result_value
 
@@ -397,25 +420,30 @@ def run_are_you_traitor(num_players: int = 4, max_rounds: int = 3, max_iter: int
     game = AreYouTheTraitor(num_players=num_players, max_rounds=max_rounds)
     logger = TraceLogger(GAME_NAME)
 
-    # Each player gets its own stateful Agent with a role-specific system prompt
+    # One stateful Agent per player with a role-specific system prompt.
+    # Agent.reset() is called between phases to keep each phase's context clean.
     agents = {
-        player: Agent(client=client, system=build_role_system_prompt(game, player))
+        player: Agent(
+            client=client,
+            system=build_system_prompt(build_role_system_prompt(game, player), game_name=GAME_NAME),
+            name=player,
+        )
         for player in game.players
     }
 
     print("=" * 60)
     print("  ARE YOU THE TRAITOR? — Multi-Agent Social Deduction")
     print("=" * 60)
+    print(f"  Provider : {client.provider.upper()} / {client.default_model}")
     print(f"  Players: {num_players}  |  Rounds: {max_rounds}")
     print(f"  Roles: 1 Hero, 1 Traitor, {num_players - 2} Healer(s)")
-    print(f"  The Traitor wins by surviving all rounds.")
-    print(f"  The village wins by eliminating the Traitor.")
+    print("\n  Secret role assignments (revealed only on elimination):")
+    for p, r in game.roles.items():
+        marker = " <- TRAITOR" if r == "traitor" else (" <- HERO" if r == "hero" else "")
+        print(f"    {p}: {r.upper()}{marker}")
     print("=" * 60)
-    print("\n  [Roles are secret — revealed only on elimination]\n")
 
-    game_over = False
-
-    while game.current_round <= game.max_rounds and not game_over:
+    while not game.is_over():
         print(f"\n{'─'*60}")
         print(f"  ROUND {game.current_round}  |  Active: {', '.join(game.active_players)}")
         print(f"{'─'*60}")
@@ -426,60 +454,61 @@ def run_are_you_traitor(num_players: int = 4, max_rounds: int = 3, max_iter: int
         })
 
         # ── Phase 1: Discussion ───────────────────────────────────────────
-        print("\n  📢  DISCUSSION PHASE\n")
+        print("\n  DISCUSSION PHASE\n")
         for player in list(game.active_players):
-            role_display = f"({game.get_role(player)})"
-            print(f"  [{player} {role_display} is thinking...]")
+            agents[player].reset()  # fresh history per phase
+            print(f"  [{player} ({game.roles[player]}) is thinking...]")
             statement = run_react_for_player(agents[player], game, player, "statement", max_iter)
-            print(f"  {player}: \"{statement}\"\n")
+            print(f'  {player}: "{statement}"\n')
 
         # ── Phase 2: Voting ───────────────────────────────────────────────
-        print("\n  🗳️  VOTING PHASE\n")
+        print("\n  VOTING PHASE\n")
         for player in list(game.active_players):
-            role_display = f"({game.get_role(player)})"
-            print(f"  [{player} {role_display} is voting...]")
+            agents[player].reset()  # fresh history for vote phase
+            print(f"  [{player} ({game.roles[player]}) is voting...]")
             vote = run_react_for_player(agents[player], game, player, "vote", max_iter)
             print(f"  {player} votes to eliminate: {vote}\n")
 
         # ── Phase 3: Elimination ──────────────────────────────────────────
-        eliminated_player, vote_counts = game.count_votes()
-        print(f"  ❌  ELIMINATION")
+        eliminated_player, vote_counts = game.tally_votes()
+        print("  ELIMINATION")
         print(f"  Vote counts: {dict(sorted(vote_counts.items(), key=lambda x: -x[1]))}")
         print(f"  Eliminated: {eliminated_player}")
         role_revealed, game_over = game.eliminate(eliminated_player)
         print(f"  Role revealed: {role_revealed.upper()}\n")
 
-        logger.record_round_result(game.current_round, {
+        logger.record_round_result(game.current_round - (0 if game_over else 1), {
             "eliminated": eliminated_player,
             "role_revealed": role_revealed,
             "vote_counts": vote_counts,
             "game_over": game_over,
         })
 
-        if not game_over:
-            game.current_round += 1
+        if game_over:
+            break
 
     # ── Final result ──────────────────────────────────────────────────────
     if game.winner is None:
-        game.winner = "traitor"  # survived all rounds
+        game.winner = "traitor"
 
     print(f"{'='*60}")
     print("  GAME OVER")
     print("=" * 60)
     if game.winner == "village":
-        print("  🏆 VILLAGE WINS — The Traitor was found and eliminated!")
+        print("  VILLAGE WINS — The Traitor was found and eliminated!")
     else:
-        print("  🕵️  TRAITOR WINS — Survived all rounds undetected!")
+        print("  TRAITOR WINS — Survived all rounds undetected!")
 
     print("\n  All roles revealed:")
-    for player, role in game.players.items():
+    for player in game.players:
+        role = game.roles[player]
         status = "eliminated" if any(p == player for p, _ in game.eliminated) else "survived"
         print(f"    {player}: {role.upper():10}  [{status}]")
 
     logger.finish({
         "winner": game.winner,
         "eliminated": game.eliminated,
-        "roles": game.players,
+        "roles": game.roles,
     })
     trace_path = logger.save()
     print(f"\n  Trace saved to: {trace_path}")

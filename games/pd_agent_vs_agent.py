@@ -12,12 +12,13 @@ Run:
 import sys
 from pathlib import Path
 
-ROOT_DIR = Path(__file__).resolve().parents[1]
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
-from agent.agent import Agent, build_system_prompt, create_client
-from agent.tracing import TraceLogger, parse_react_response
+from agent.agent import Agent, build_system_prompt, create_client  # noqa: E402
+from agent.tracing import TraceLogger, parse_react_response  # noqa: E402
+from games.prisoners_dilemma import SymmetricPD  # noqa: E402
 
 GAME_NAME = "prisoners_dilemma_agent_vs_agent"
 
@@ -54,73 +55,18 @@ Decision: cooperate
 """.strip()
 
 
-class SymmetricPD:
+def run_round_for_agent(
+    agent: Agent,
+    side: str,
+    game: SymmetricPD,
+    max_iter: int = 10,
+) -> tuple[str, str]:
     """
-    Prisoner's Dilemma where both players are AI agents.
-    Moves are submitted independently and revealed simultaneously.
+    Run the ReAct loop for one agent. Returns (move, reasoning_summary).
+    The move is captured but NOT applied until both agents have decided.
     """
-
-    PAYOFFS = {
-        ("cooperate", "cooperate"): (3, 3),
-        ("cooperate", "defect"):    (0, 5),
-        ("defect",    "cooperate"): (5, 0),
-        ("defect",    "defect"):    (1, 1),
-    }
-
-    def __init__(self, rounds=5):
-        self.rounds = rounds
-        self.current_round = 1
-        self.score_a = 0
-        self.score_b = 0
-        self.history = []  # list of (move_a, move_b)
-
-    def get_state_for(self, side: str) -> str:
-        my_score = self.score_a if side == "A" else self.score_b
-        opp_score = self.score_b if side == "A" else self.score_a
-        if self.history:
-            last_a, last_b = self.history[-1]
-            opp_last = last_b if side == "A" else last_a
-            last_str = f"Opponent's last move: {opp_last}."
-        else:
-            last_str = "No moves yet."
-        return (
-            f"Round {self.current_round}/{self.rounds}. "
-            f"{last_str} Score: You {my_score}, Opponent {opp_score}."
-        )
-
-    def get_legal_moves(self):
-        return ["cooperate", "defect"]
-
-    def apply_moves(self, move_a: str, move_b: str) -> tuple[str, str]:
-        move_a = move_a.strip().lower()
-        move_b = move_b.strip().lower()
-        if move_a not in ("cooperate", "defect"):
-            move_a = "cooperate"
-        if move_b not in ("cooperate", "defect"):
-            move_b = "cooperate"
-        pts_a, pts_b = self.PAYOFFS[(move_a, move_b)]
-        self.score_a += pts_a
-        self.score_b += pts_b
-        self.history.append((move_a, move_b))
-        self.current_round += 1
-        obs_a = (
-            f"Move accepted. You played {move_a}, opponent played {move_b}. "
-            f"Points this round: You +{pts_a}, Opponent +{pts_b}."
-        )
-        obs_b = (
-            f"Move accepted. You played {move_b}, opponent played {move_a}. "
-            f"Points this round: You +{pts_b}, Opponent +{pts_a}."
-        )
-        return obs_a, obs_b
-
-    def is_over(self):
-        return self.current_round > self.rounds
-
-
-def build_agent_context(game: SymmetricPD, side: str) -> str:
-    my_score = game.score_a if side == "A" else game.score_b
-    opp_score = game.score_b if side == "A" else game.score_a
-    return f"""
+    tools = ["get_game_state", "get_legal_moves", "make_move"]
+    next_prompt = f"""
 You are playing Prisoner's Dilemma against another AI agent. Maximize your total score over {game.rounds} rounds.
 Both of you decide simultaneously — your opponent cannot see your current-round choice before they commit.
 
@@ -141,19 +87,6 @@ Your opponent is a reasoning AI agent — they may be running a similar analysis
 Use the Thought/Action/PAUSE loop to decide.
 """.strip()
 
-
-def run_round_for_agent(
-    agent: Agent,
-    side: str,
-    game: SymmetricPD,
-    max_iter: int = 10,
-) -> tuple[str, str]:
-    """
-    Run the ReAct loop for one agent. Returns (move, reasoning_summary).
-    The move is captured but NOT applied until both agents have decided.
-    """
-    tools = ["get_game_state", "get_legal_moves", "make_move"]
-    next_prompt = build_agent_context(game, side)
     captured_move = None
     reasoning_parts = []
 
@@ -204,11 +137,11 @@ def run_agent_vs_agent(rounds: int = 5, max_iter: int = 10):
     game = SymmetricPD(rounds=rounds)
     logger = TraceLogger(GAME_NAME)
 
-    system_a = build_system_prompt(SCOT_GAME_PROMPT, game_name=GAME_NAME)
-    system_b = build_system_prompt(SCOT_GAME_PROMPT, game_name=GAME_NAME)
+    system = build_system_prompt(SCOT_GAME_PROMPT, game_name=GAME_NAME)
 
     print("=" * 60)
     print("  PRISONER'S DILEMMA — Agent A vs Agent B")
+    print(f"  Provider : {client.provider.upper()} / {client.default_model}")
     print(f"  Rounds: {rounds}  |  Both agents: independent ReAct + SCoT")
     print("  Moves revealed simultaneously after both decide.")
     print("=" * 60)
@@ -225,46 +158,41 @@ def run_agent_vs_agent(rounds: int = 5, max_iter: int = 10):
             "history": game.history,
         })
 
-        # Each agent runs independently — B cannot see A's move
-        agent_a = Agent(client=client, system=system_a)
-        agent_b = Agent(client=client, system=system_b)
+        agent_a = Agent(client=client, system=system, name="Agent_A")
+        agent_b = Agent(client=client, system=system, name="Agent_B")
 
-        print("\n  🤖 [Agent A reasoning...]")
+        print("\n  [Agent A reasoning...]")
         move_a, reasoning_a = run_round_for_agent(agent_a, "A", game, max_iter)
 
-        print("\n  🤖 [Agent B reasoning...]")
+        print("\n  [Agent B reasoning...]")
         move_b, reasoning_b = run_round_for_agent(agent_b, "B", game, max_iter)
 
-        # Reveal simultaneously
         obs_a, obs_b = game.apply_moves(move_a, move_b)
+        pts_a, pts_b = SymmetricPD.PAYOFFS[(move_a, move_b)]
 
-        print(f"\n  ▶  MOVES REVEALED:")
+        print(f"\n  MOVES REVEALED:")
         print(f"     Agent_A → {move_a.upper()}")
         print(f"     Agent_B → {move_b.upper()}")
-        pts_a, pts_b = SymmetricPD.PAYOFFS[(move_a, move_b)]
         print(f"     Points this round: Agent_A +{pts_a}  |  Agent_B +{pts_b}")
 
-        print(f"\n  💭 Agent A thought: {reasoning_a[:250].strip()}{'...' if len(reasoning_a) > 250 else ''}")
-        print(f"  💭 Agent B thought: {reasoning_b[:250].strip()}{'...' if len(reasoning_b) > 250 else ''}")
+        print(f"\n  Agent A thought: {reasoning_a[:250].strip()}{'...' if len(reasoning_a) > 250 else ''}")
+        print(f"  Agent B thought: {reasoning_b[:250].strip()}{'...' if len(reasoning_b) > 250 else ''}")
 
         logger.record_round_result(round_num, {
-            "move_a": move_a,
-            "move_b": move_b,
-            "pts_a": pts_a,
-            "pts_b": pts_b,
-            "score_a": game.score_a,
-            "score_b": game.score_b,
+            "move_a": move_a, "move_b": move_b,
+            "pts_a": pts_a, "pts_b": pts_b,
+            "score_a": game.score_a, "score_b": game.score_b,
         })
 
     print(f"\n{'='*60}")
     print("  GAME OVER")
     print(f"  Final Score: Agent_A {game.score_a}  |  Agent_B {game.score_b}")
     if game.score_a > game.score_b:
-        print("  🏆 Agent_A wins!")
+        print("  Agent_A wins!")
     elif game.score_b > game.score_a:
-        print("  🏆 Agent_B wins!")
+        print("  Agent_B wins!")
     else:
-        print("  🤝 Draw.")
+        print("  Draw.")
 
     print("\n  Move history:")
     for i, (ma, mb) in enumerate(game.history, 1):
@@ -275,7 +203,8 @@ def run_agent_vs_agent(rounds: int = 5, max_iter: int = 10):
         "score_a": game.score_a,
         "score_b": game.score_b,
         "history": game.history,
-        "winner": "agent_a" if game.score_a > game.score_b else ("agent_b" if game.score_b > game.score_a else "draw"),
+        "winner": ("agent_a" if game.score_a > game.score_b
+                   else "agent_b" if game.score_b > game.score_a else "draw"),
     })
     trace_path = logger.save()
     print(f"\n  Trace saved to: {trace_path}")

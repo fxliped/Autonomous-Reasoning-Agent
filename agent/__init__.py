@@ -1,10 +1,11 @@
 from .agent import (
     Agent,
     BASE_REACT_PROMPT,
-    DEFAULT_MODEL,
     append_reflection,
     build_system_prompt,
+    create_client,
     create_gemini_client,
+    detect_provider,
     load_reflections,
 )
 from .tracing import (
@@ -18,11 +19,12 @@ from .tracing import (
 __all__ = [
     "Agent",
     "BASE_REACT_PROMPT",
-    "DEFAULT_MODEL",
     "TraceLogger",
     "append_reflection",
     "build_system_prompt",
+    "create_client",
     "create_gemini_client",
+    "detect_provider",
     "judge_trace",
     "load_reflections",
     "parse_react_response",

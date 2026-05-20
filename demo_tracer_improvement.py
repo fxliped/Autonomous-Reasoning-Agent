@@ -25,7 +25,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from agent.agent import create_client, reflection_path
 from agent.tracing import judge_trace, write_judge_result
-from games.React_agent_gameV1 import PrisonersDilemma, run_game
+from games.prisoners_dilemma import PrisonersDilemma, run_game
 
 DEMO_GAME_NAME = "prisoners_dilemma"  # shared with main PD game so reflections feed back in
 OPPONENT = "grim_trigger"
@@ -68,7 +68,7 @@ def main():
     time.sleep(1)
 
     game_before = PrisonersDilemma(rounds=ROUNDS, opponent_strategy=OPPONENT)
-    run_game(game_before, max_iterations=10, auto_judge=False)
+    run_game(game_before, max_iter=10, auto_judge=False)
 
     # Find the trace that was just saved
     traces_dir = ROOT_DIR / "traces"
@@ -126,7 +126,7 @@ def main():
     time.sleep(1)
 
     game_after = PrisonersDilemma(rounds=ROUNDS, opponent_strategy=OPPONENT)
-    run_game(game_after, max_iterations=10, auto_judge=False)
+    run_game(game_after, max_iter=10, auto_judge=False)
 
     score_after = game_after.agent_score
     opp_score_after = game_after.opponent_score
