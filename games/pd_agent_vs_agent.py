@@ -18,7 +18,8 @@ if str(_ROOT) not in sys.path:
 
 from agent.agent import Agent, build_system_prompt, create_client  # noqa: E402
 from agent.tracing import TraceLogger, parse_react_response  # noqa: E402
-from games.prisoners_dilemma import SymmetricPD  # noqa: E402
+from games.pd_game import SymmetricPD  # noqa: E402
+from games.prisoners_dilemma import build_ava_context  # noqa: E402
 
 GAME_NAME = "prisoners_dilemma_agent_vs_agent"
 
@@ -66,26 +67,7 @@ def run_round_for_agent(
     The move is captured but NOT applied until both agents have decided.
     """
     tools = ["get_game_state", "get_legal_moves", "make_move"]
-    next_prompt = f"""
-You are playing Prisoner's Dilemma against another AI agent. Maximize your total score over {game.rounds} rounds.
-Both of you decide simultaneously — your opponent cannot see your current-round choice before they commit.
-
-RULES:
-- Both cooperate  → both get +3 points.
-- You cooperate, they defect  → you +0, they +5.
-- You defect, they cooperate  → you +5, they +0.
-- Both defect  → both get +1 point.
-
-CURRENT STATE:
-{game.get_state_for(side)}
-
-LEGAL MOVES:
-{game.get_legal_moves()}
-
-First, reason out loud: which action maximizes your probability of winning?
-Your opponent is a reasoning AI agent — they may be running a similar analysis. Think about what they will likely do and best-respond.
-Use the Thought/Action/PAUSE loop to decide.
-""".strip()
+    next_prompt = build_ava_context(game, side)
 
     captured_move = None
     reasoning_parts = []

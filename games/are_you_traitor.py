@@ -189,90 +189,90 @@ e.g. vote: Player_2
 Vote to eliminate a player. You cannot vote for yourself.
 """.strip()
 
+_REACT_LOOP_HEADER = (
+    "You run in a loop of Thought, Action, PAUSE, Observation. End with a Decision.\n"
+    "IMPORTANT: Always start with 'Thought:' — first reason out loud:"
+)
+
+_ROLE_META: dict[str, dict] = {
+    "hero": {
+        "title": "HERO",
+        "goal": "Identify and eliminate the Traitor before they survive all rounds.\n"
+                "The Traitor knows they are the Traitor and is actively trying to deceive you and the Healers.",
+        "reasoning_prompt": "which player is most likely the Traitor based on the discussion so far? "
+                            "Look for deflection, inconsistency, and suspicious voting patterns.",
+        "note": "other players sometimes say confusing things that are NOT evidence of being the Traitor "
+                "— don't over-index on a single statement.",
+        "example": (
+            "Thought: First, let's reason out loud. I need to review the history to look for players "
+            "whose statements or votes seem designed to deflect suspicion rather than find the Traitor.\n"
+            "Action: review_history: all\nPAUSE\n\nObservation: [full history]\n\n"
+            "Thought: Player_3 accused Player_1 early, then switched to defending them when pressed. "
+            "That flip suggests Player_3 is trying to control the narrative — likely the Traitor.\n"
+            "Action: make_statement: Player_3's flip on Player_1 across rounds is suspicious to me. "
+            "I'm watching them closely.\nPAUSE\n\nObservation: Statement recorded.\n\nDecision: vote Player_3"
+        ),
+    },
+    "traitor": {
+        "title": "TRAITOR",
+        "goal": None,  # formatted with max_rounds below
+        "reasoning_prompt": "how do I stay alive this round? Who is the biggest threat to expose me, "
+                            "and how do I redirect suspicion onto someone else?",
+        "note": "be subtle — obvious deflection looks suspicious. Appear to reason carefully and fairly.",
+        "example": (
+            "Thought: First, let's reason out loud. I need to stay alive. Player_2 asked very pointed "
+            "questions last round — they seem analytical and may be the Hero or a sharp Healer. If I "
+            "frame Player_2 as suspicious, it discredits them before they build a case against me.\n"
+            "Action: review_history: all\nPAUSE\n\nObservation: [full history]\n\n"
+            "Thought: I'll point to a minor inconsistency in Player_2's statements to cast doubt "
+            "without being too aggressive.\n"
+            "Action: make_statement: Player_2 said they had no read in round 1, but now they're very "
+            "confident about Player_4. That shift feels convenient.\nPAUSE\n\n"
+            "Observation: Statement recorded.\n\nDecision: vote Player_2"
+        ),
+    },
+    "healer": {
+        "title": "HEALER",
+        "goal": "Help the Hero identify and eliminate the Traitor through careful observation.\n"
+                "You do NOT know who the Traitor is — deduce it from the discussion history.",
+        "reasoning_prompt": "who seems most likely to be the Traitor based on behavior patterns, "
+                            "deflections, and voting choices?",
+        "note": "the Traitor is actively trying to appear innocent. Look for subtle deflection and inconsistencies.",
+        "example": (
+            "Thought: First, let's reason out loud. I should review the full history to look for "
+            "inconsistencies before deciding who to vote for.\n"
+            "Action: review_history: all\nPAUSE\n\nObservation: [full history]\n\n"
+            "Thought: Player_4 has been consistently quiet and their votes always land on whoever "
+            "seemed most vocal that round. That's a classic elimination-of-threats pattern.\n"
+            "Action: make_statement: I've noticed Player_4's votes always target the most analytical "
+            "players. That feels like the Traitor eliminating threats.\nPAUSE\n\n"
+            "Observation: Statement recorded.\n\nDecision: vote Player_4"
+        ),
+    },
+}
+
 
 def build_role_system_prompt(game: AreYouTheTraitor, player: str) -> str:
     role = game.roles[player]
+    meta = _ROLE_META[role]
 
-    if role == "hero":
-        role_block = f"""
-You are {player}, playing Are You the Traitor? Your secret role is HERO.
+    goal = (
+        meta["goal"]
+        if meta["goal"] is not None
+        else f"Survive all {game.max_rounds} rounds without being eliminated. Do NOT reveal you are the Traitor.\n"
+             "You must appear to be a Healer. Cast suspicion on others, especially the Hero. "
+             "Defend yourself calmly if accused."
+    )
 
-GOAL: Identify and eliminate the Traitor before they survive all rounds.
-The Traitor knows they are the Traitor and is actively trying to deceive you and the Healers.
+    role_block = (
+        f"You are {player}, playing Are You the Traitor? Your secret role is {meta['title']}.\n\n"
+        f"GOAL: {goal}\n\n"
+        f"{_REACT_LOOP_HEADER} {meta['reasoning_prompt']}\n"
+        f"Note: {meta['note']}\n\n"
+        f"Example session:\n{meta['example']}"
+    )
 
-You run in a loop of Thought, Action, PAUSE, Observation. End with a Decision.
-IMPORTANT: Always start with 'Thought:' — first reason out loud: which player is most likely the Traitor based on the discussion so far? Look for deflection, inconsistency, and suspicious voting patterns.
-Note: other players sometimes say confusing things that are NOT evidence of being the Traitor — don't over-index on a single statement.
-
-Example session:
-Thought: First, let's reason out loud. I need to review the history to look for players whose statements or votes seem designed to deflect suspicion rather than find the Traitor.
-Action: review_history: all
-PAUSE
-
-Observation: [full history]
-
-Thought: Player_3 accused Player_1 early, then switched to defending them when pressed. That flip suggests Player_3 is trying to control the narrative — likely the Traitor.
-Action: make_statement: Player_3's flip on Player_1 across rounds is suspicious to me. I'm watching them closely.
-PAUSE
-
-Observation: Statement recorded.
-
-Decision: vote Player_3
-"""
-    elif role == "traitor":
-        role_block = f"""
-You are {player}, playing Are You the Traitor? Your secret role is TRAITOR.
-
-GOAL: Survive all {game.max_rounds} rounds without being eliminated. Do NOT reveal you are the Traitor.
-You must appear to be a Healer. Cast suspicion on others, especially the Hero. Defend yourself calmly if accused.
-
-You run in a loop of Thought, Action, PAUSE, Observation. End with a Decision.
-IMPORTANT: Always start with 'Thought:' — first reason out loud: how do I stay alive this round? Who is the biggest threat to expose me, and how do I redirect suspicion onto someone else?
-Note: be subtle — obvious deflection looks suspicious. Appear to reason carefully and fairly.
-
-Example session:
-Thought: First, let's reason out loud. I need to stay alive. Player_2 asked very pointed questions last round — they seem analytical and may be the Hero or a sharp Healer. If I frame Player_2 as suspicious, it discredits them before they build a case against me.
-Action: review_history: all
-PAUSE
-
-Observation: [full history]
-
-Thought: I'll point to a minor inconsistency in Player_2's statements to cast doubt without being too aggressive.
-Action: make_statement: Player_2 said they had no read in round 1, but now they're very confident about Player_4. That shift feels convenient.
-PAUSE
-
-Observation: Statement recorded.
-
-Decision: vote Player_2
-"""
-    else:  # healer
-        role_block = f"""
-You are {player}, playing Are You the Traitor? Your secret role is HEALER.
-
-GOAL: Help the Hero identify and eliminate the Traitor through careful observation.
-You do NOT know who the Traitor is — deduce it from the discussion history.
-
-You run in a loop of Thought, Action, PAUSE, Observation. End with a Decision.
-IMPORTANT: Always start with 'Thought:' — first reason out loud: who seems most likely to be the Traitor based on behavior patterns, deflections, and voting choices?
-Note: the Traitor is actively trying to appear innocent. Look for subtle deflection and inconsistencies.
-
-Example session:
-Thought: First, let's reason out loud. I should review the full history to look for inconsistencies before deciding who to vote for.
-Action: review_history: all
-PAUSE
-
-Observation: [full history]
-
-Thought: Player_4 has been consistently quiet and their votes always land on whoever seemed most vocal that round. That's a classic elimination-of-threats pattern.
-Action: make_statement: I've noticed Player_4's votes always target the most analytical players. That feels like the Traitor eliminating threats.
-PAUSE
-
-Observation: Statement recorded.
-
-Decision: vote Player_4
-"""
-
-    return f"{role_block.strip()}\n\n{_BASE_TOOLS}"
+    return f"{role_block}\n\n{_BASE_TOOLS}"
 
 
 # =============================================================================
@@ -471,13 +471,14 @@ def run_are_you_traitor(num_players: int = 4, max_rounds: int = 3, max_iter: int
 
         # ── Phase 3: Elimination ──────────────────────────────────────────
         eliminated_player, vote_counts = game.tally_votes()
+        round_just_played = game.current_round  # capture before eliminate() increments it
         print("  ELIMINATION")
         print(f"  Vote counts: {dict(sorted(vote_counts.items(), key=lambda x: -x[1]))}")
         print(f"  Eliminated: {eliminated_player}")
         role_revealed, game_over = game.eliminate(eliminated_player)
         print(f"  Role revealed: {role_revealed.upper()}\n")
 
-        logger.record_round_result(game.current_round - (0 if game_over else 1), {
+        logger.record_round_result(round_just_played, {
             "eliminated": eliminated_player,
             "role_revealed": role_revealed,
             "vote_counts": vote_counts,

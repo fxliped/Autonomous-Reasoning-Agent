@@ -25,6 +25,10 @@ Use Action to call one of your available tools, then return PAUSE.
 Observation will be the result of that tool.
 """.strip()
 
+# Single source of truth for default models — used by both detect_provider() and LLMClient.
+_OPENAI_DEFAULT_MODEL = "gpt-4o-mini"
+_GEMINI_DEFAULT_MODEL = "gemini-2.5-flash"
+
 
 # =============================================================================
 # PROVIDER DETECTION
@@ -37,10 +41,10 @@ def detect_provider() -> tuple[str, str]:
     Returns (provider_name, default_model_name).
     """
     if os.getenv("OPENAI_API_KEY"):
-        return "openai", LLMClient.OPENAI_DEFAULT_MODEL
+        return "openai", _OPENAI_DEFAULT_MODEL
     gemini_key = os.getenv("gemeni_api_key") or os.getenv("GEMINI_API_KEY")
     if gemini_key:
-        return "gemini", LLMClient.GEMINI_DEFAULT_MODEL
+        return "gemini", _GEMINI_DEFAULT_MODEL
     raise ValueError(
         "No API key found. Set OPENAI_API_KEY (preferred) or GEMINI_API_KEY in your .env file."
     )
@@ -58,8 +62,8 @@ class LLMClient:
     messages format: [{"role": "user"|"assistant", "content": "..."}]
     """
 
-    OPENAI_DEFAULT_MODEL = "gpt-4o-mini"
-    GEMINI_DEFAULT_MODEL = "gemini-2.5-flash"
+    OPENAI_DEFAULT_MODEL = _OPENAI_DEFAULT_MODEL
+    GEMINI_DEFAULT_MODEL = _GEMINI_DEFAULT_MODEL
 
     def __init__(self):
         self.provider, self.default_model = detect_provider()
