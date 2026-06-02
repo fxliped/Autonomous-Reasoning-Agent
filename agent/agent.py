@@ -25,10 +25,6 @@ Use Action to call one of your available tools, then return PAUSE.
 Observation will be the result of that tool.
 """.strip()
 
-# Single source of truth for default models — used by both detect_provider() and LLMClient.
-_OPENAI_DEFAULT_MODEL = "gpt-4o-mini"
-_GEMINI_DEFAULT_MODEL = "gemini-2.5-flash"
-
 
 # =============================================================================
 # PROVIDER DETECTION
@@ -41,10 +37,10 @@ def detect_provider() -> tuple[str, str]:
     Returns (provider_name, default_model_name).
     """
     if os.getenv("OPENAI_API_KEY"):
-        return "openai", _OPENAI_DEFAULT_MODEL
+        return "openai", LLMClient.OPENAI_DEFAULT_MODEL
     gemini_key = os.getenv("gemeni_api_key") or os.getenv("GEMINI_API_KEY")
     if gemini_key:
-        return "gemini", _GEMINI_DEFAULT_MODEL
+        return "gemini", LLMClient.GEMINI_DEFAULT_MODEL
     raise ValueError(
         "No API key found. Set OPENAI_API_KEY (preferred) or GEMINI_API_KEY in your .env file."
     )
@@ -62,8 +58,8 @@ class LLMClient:
     messages format: [{"role": "user"|"assistant", "content": "..."}]
     """
 
-    OPENAI_DEFAULT_MODEL = _OPENAI_DEFAULT_MODEL
-    GEMINI_DEFAULT_MODEL = _GEMINI_DEFAULT_MODEL
+    OPENAI_DEFAULT_MODEL = "gpt-4o-mini"
+    GEMINI_DEFAULT_MODEL = "gemini-2.5-flash"
 
     def __init__(self):
         self.provider, self.default_model = detect_provider()
@@ -224,6 +220,42 @@ class Agent:
         result = self.client.complete(self.system, self.messages, self.model)
         self.messages.append({"role": "assistant", "content": result})
         return result
+
+    def generate_message(self, context: str, max_words: int = 50) -> str:
+        """
+        Generate a strategic message to send to the opponent.
+        The agent reasons about what to say given the game context,
+        then produces a message of at most max_words words.
+        The reasoning and message stay in conversation history so
+        the subsequent action phase can reference what was sent.
+        """
+        prompt = (
+            f"{context}\n\n"
+            f"You are about to send a message to your opponent (max {max_words} words). "
+            "Your message can be honest, strategic, or deceptive — you decide based on "
+            "the game state and history.\n\n"
+            "First, write your internal reasoning on lines starting with 'Thought:'.\n"
+            "Then, on a SEPARATE final line, write ONLY the message your opponent will see, "
+            f"starting with 'Message:' (max {max_words} words).\n\n"
+            "IMPORTANT: Your opponent will ONLY see the text after 'Message:'. "
+            "Do NOT include strategy reasoning in the Message line — that is private to your Thought."
+        )
+        result = self(prompt)
+        return self._parse_message(result or "", max_words)
+
+    @staticmethod
+    def _parse_message(response: str, max_words: int) -> str:
+        import re
+        match = re.search(r"Message:\s*(.+)", response, re.IGNORECASE)
+        if match:
+            text = match.group(1).strip()
+        else:
+            lines = [l.strip() for l in response.strip().splitlines() if l.strip()]
+            text = lines[-1] if lines else ""
+        words = text.split()
+        if len(words) > max_words:
+            words = words[:max_words]
+        return " ".join(words)
 
     def reset(self):
         """Clear conversation history (use between rounds or phases)."""

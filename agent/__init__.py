@@ -23,6 +23,7 @@ __all__ = [
     "append_reflection",
     "build_system_prompt",
     "create_client",
+    "create_gemini_client",
     "detect_provider",
     "judge_trace",
     "load_reflections",
