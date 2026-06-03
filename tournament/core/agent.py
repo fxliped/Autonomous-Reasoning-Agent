@@ -17,14 +17,16 @@ The two-phase round structure mirrors the platform exactly:
     agent.end_match(my_avg_score, opp_avg_score)  # per-round averages
 
 Test locally:
-    python tournament/agent.py --strategy tit_for_tat
+    python tournament/core/agent.py --strategy tit_for_tat
 """
 
 import re
 import sys
+import uuid
+from datetime import datetime
 from pathlib import Path
 
-ROOT_DIR = Path(__file__).resolve().parents[1]
+ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
@@ -35,15 +37,16 @@ from agent.memory import (  # noqa: E402
     log_tournament_result,
     update_profile_after_match,
 )
+from analytics.db import ingest_match_rounds  # noqa: E402
 from games.pd_game import PrisonersDilemma  # noqa: E402
-from tournament.classifier import (  # noqa: E402
+from .classifier import (  # noqa: E402
     BehavioralProfile,
     bayes_update,
     top_classification,
     _UNIFORM_PRIOR,
 )
-from tournament.context import build_message_context, build_action_context  # noqa: E402
-from tournament.prompts import (  # noqa: E402
+from .context import build_message_context, build_action_context  # noqa: E402
+from .prompts import (  # noqa: E402
     TOURNAMENT_SYSTEM_PROMPT,
     _ADVOCATE_C,
     _ADVOCATE_D,
@@ -107,6 +110,8 @@ class TournamentAgent:
         self._matches_remaining: int | None = None
         self._type_posterior: dict[str, float] = dict(_UNIFORM_PRIOR)
         self._behavioral = BehavioralProfile()
+        self._run_id = f"{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+        self._debate_count = 0  # debates used this match (capped at 2 to control LLM cost)
 
     @property
     def match_rounds(self) -> list[dict]:
@@ -176,8 +181,12 @@ class TournamentAgent:
 
         return "\n".join(lines)
 
+    _MAX_DEBATES_PER_MATCH = 2
+
     def _should_debate(self, round_num: int, total_rounds: int) -> bool:
         if not self.use_debate:
+            return False
+        if self._debate_count >= self._MAX_DEBATES_PER_MATCH:
             return False
         is_endgame = (total_rounds - round_num) <= 1
         is_uncertain = self._last_confidence < 0.5 and round_num > 2
@@ -314,6 +323,7 @@ class TournamentAgent:
 
         if self._should_debate(round_num, total_rounds):
             action_int = self._run_debate(context, round_num)
+            self._debate_count += 1
         else:
             agent = Agent(client=self.client, system=self._system)
             response = agent(context)
@@ -388,7 +398,7 @@ class TournamentAgent:
                 )
 
     def end_match(self, my_avg_score: float, opp_avg_score: float) -> None:
-        """Summarize match via LLM, update opponent profile, persist to disk."""
+        """Summarize match via LLM, update opponent profile, persist to DB, log analytics."""
         self.profile = update_profile_after_match(
             self.profile, self._match_rounds, my_avg_score, opp_avg_score, self.client,
         )
@@ -399,6 +409,14 @@ class TournamentAgent:
             "opp_avg_score": opp_avg_score,
             "rounds": self._match_rounds,
         })
+        # Log to analytics DB for trajectory analysis
+        ingest_match_rounds(
+            run_id=self._run_id,
+            game_name=GAME_NAME,
+            match_rounds=self._match_rounds,
+            my_avg=my_avg_score,
+            opp_avg=opp_avg_score,
+        )
         self._match_rounds = []
         print(f"\n[TournamentAgent] Profile saved for '{self.opponent_id}'.")
 

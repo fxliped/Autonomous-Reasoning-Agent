@@ -15,12 +15,12 @@ Supporting helpers:
 import sys
 from pathlib import Path
 
-ROOT_DIR = Path(__file__).resolve().parents[1]
+ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from agent.memory import format_opponent_context  # noqa: E402
-from tournament.classifier import BehavioralProfile  # noqa: E402
+from .classifier import BehavioralProfile  # noqa: E402
 
 
 # =============================================================================
@@ -146,14 +146,18 @@ def score_gap_block(
 def _history_block(match_history: list[dict]) -> str:
     if not match_history:
         return "PREVIOUS ROUNDS: None — this is round 1."
-    lines = [
-        f"  R{r['round']}: I played {r.get('my_action','?')} | "
-        f"they played {r.get('opp_action','?')} | "
-        f"pts me{'+' if (r.get('my_pts') or 0) >= 0 else ''}{r.get('my_pts','?')} "
-        f"them{'+' if (r.get('opp_pts') or 0) >= 0 else ''}{r.get('opp_pts','?')} | "
-        f"they said: \"{r.get('opp_msg','')}\""
-        for r in match_history
-    ]
+    lines = []
+    for r in match_history:
+        my_pts = r.get('my_pts') or 0
+        opp_pts = r.get('opp_pts') or 0
+        my_said = f' | I said: "{r["my_msg"]}"' if r.get("my_msg") else ""
+        lines.append(
+            f"  R{r['round']}: I played {r.get('my_action','?')} | "
+            f"they played {r.get('opp_action','?')} | "
+            f"pts me{'+' if my_pts >= 0 else ''}{my_pts} "
+            f"them{'+' if opp_pts >= 0 else ''}{opp_pts} | "
+            f"they said: \"{r.get('opp_msg','')}\"" + my_said
+        )
     return "PREVIOUS ROUNDS:\n" + "\n".join(lines)
 
 

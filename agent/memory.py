@@ -1,67 +1,50 @@
-"""Persistent opponent memory for cross-tournament learning."""
+"""
+Persistent opponent memory — SQLite-backed via analytics.db.
+
+  load_opponent_profile(opponent_id)        → dict
+  save_opponent_profile(profile)
+  log_tournament_result(result)
+  format_opponent_context(profile)          → str
+  update_profile_after_match(...)           → dict
+
+Storage: data/agent.db (shared with the analytics layer).
+Legacy JSON files in agent/memory/opponents/ are migrated automatically on first load.
+"""
+
+from __future__ import annotations
 
 import json
 import re
-from datetime import date
+import sys
 from pathlib import Path
 
-MEMORY_DIR = Path(__file__).resolve().parent / "memory"
-OPPONENTS_DIR = MEMORY_DIR / "opponents"
-TOURNAMENTS_FILE = MEMORY_DIR / "tournaments" / "history.json"
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
-_EMPTY_PROFILE: dict = {
-    "opponent_id": None,
-    "matches_played": 0,
-    "classified_type": None,
-    "type_confidence": 0.0,
-    "total_my_score": 0,
-    "total_opp_score": 0,
-    "match_history": [],
-    "effective_messages": [],
-    "failed_messages": [],
-    "notes": "",
-    "last_updated": None,
-}
+from analytics.db import load_opponent, save_opponent, log_match  # noqa: E402
 
 
-def _safe(name: str) -> str:
-    return "".join(c if c.isalnum() or c in "-_" else "_" for c in str(name))
-
+# ─── PUBLIC API ───────────────────────────────────────────────────────────────
 
 def load_opponent_profile(opponent_id: str) -> dict:
-    """Load opponent profile, or return a blank one if not yet seen."""
-    OPPONENTS_DIR.mkdir(parents=True, exist_ok=True)
-    path = OPPONENTS_DIR / f"{_safe(opponent_id)}.json"
-    if not path.exists():
-        profile = dict(_EMPTY_PROFILE)
-        profile["opponent_id"] = opponent_id
-        return profile
-    return json.loads(path.read_text(encoding="utf-8"))
+    """Load opponent profile from DB (migrates legacy JSON on first access)."""
+    return load_opponent(opponent_id)
 
 
 def save_opponent_profile(profile: dict) -> None:
-    OPPONENTS_DIR.mkdir(parents=True, exist_ok=True)
-    path = OPPONENTS_DIR / f"{_safe(profile['opponent_id'])}.json"
-    profile["last_updated"] = str(date.today())
-    path.write_text(json.dumps(profile, indent=2), encoding="utf-8")
+    """Persist opponent profile to DB."""
+    save_opponent(profile)
 
 
 def log_tournament_result(result: dict) -> None:
-    """Append a match result to the global tournament history log."""
-    TOURNAMENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    history = (
-        json.loads(TOURNAMENTS_FILE.read_text(encoding="utf-8"))
-        if TOURNAMENTS_FILE.exists()
-        else []
-    )
-    result["date"] = str(date.today())
-    history.append(result)
-    TOURNAMENTS_FILE.write_text(json.dumps(history, indent=2), encoding="utf-8")
+    """Append a match result to the global history."""
+    log_match(result)
 
 
 def format_opponent_context(profile: dict) -> str:
     """Format opponent profile as a text block for system prompt injection."""
-    if profile["matches_played"] == 0:
+    if profile.get("matches_played", 0) == 0:
         return "OPPONENT HISTORY: First time facing this opponent — no prior data."
 
     lines = [f"OPPONENT HISTORY: {profile['matches_played']} previous match(es)."]
@@ -151,16 +134,15 @@ def update_profile_after_match(
             messages=[{"role": "user", "content": prompt}],
         )
         text = raw.strip()
-        # strip markdown fences if LLM adds them anyway
         text = re.sub(r"^```[a-z]*\n?", "", text)
         text = re.sub(r"\n?```$", "", text)
         analysis = json.loads(text.strip())
     except Exception:
         analysis = {}
 
-    profile["matches_played"] += 1
-    profile["total_my_score"] += my_final_score
-    profile["total_opp_score"] += opp_final_score
+    profile["matches_played"] = profile.get("matches_played", 0) + 1
+    profile["total_my_score"] = (profile.get("total_my_score") or 0) + my_final_score
+    profile["total_opp_score"] = (profile.get("total_opp_score") or 0) + opp_final_score
 
     if analysis.get("classified_type"):
         profile["classified_type"] = analysis["classified_type"]
@@ -168,13 +150,13 @@ def update_profile_after_match(
         profile["type_confidence"] = float(analysis["type_confidence"])
 
     for msg in analysis.get("effective_messages", []):
-        if msg and msg not in profile["effective_messages"]:
-            profile["effective_messages"].append(msg)
+        if msg and msg not in profile.get("effective_messages", []):
+            profile.setdefault("effective_messages", []).append(msg)
     for msg in analysis.get("failed_messages", []):
-        if msg and msg not in profile["failed_messages"]:
-            profile["failed_messages"].append(msg)
+        if msg and msg not in profile.get("failed_messages", []):
+            profile.setdefault("failed_messages", []).append(msg)
 
-    profile["match_history"].append({
+    profile.setdefault("match_history", []).append({
         "my_score": my_final_score,
         "opp_score": opp_final_score,
         "strategy_used": analysis.get("strategy_used", "unknown"),

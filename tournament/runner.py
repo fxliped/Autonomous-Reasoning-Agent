@@ -29,7 +29,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from tournament.agent import TournamentAgent  # noqa: E402
+from tournament.core.agent import TournamentAgent  # noqa: E402
 
 CONTROL = "https://llw83cu38l.execute-api.us-west-2.amazonaws.com"
 GAME_SERVER_FALLBACK = "http://GameAp-Servi-tOMiXPVqPFIe-185462629.us-west-2.elb.amazonaws.com"
@@ -240,7 +240,8 @@ def play_session(
     my_name = ""
     opp_name = ""
     message_sent_this_round: str = ""
-    msg_log: dict[int, str] = {}   # round_num → opponent message (filled after phase flips)
+    msg_log: dict[int, str] = {}      # round_num → opponent message (filled in MOVING phase)
+    my_msg_log: dict[int, str] = {}   # round_num → agent's own message (filled in MESSAGING phase)
     empty_wait_start: float | None = None
 
     while True:
@@ -254,7 +255,10 @@ def play_session(
             else:
                 my_avg = opp_avg = 0.0
             print(f"\n[Session] Terminal. My avg score: {my_avg:.3f} | Opp: {opp_avg:.3f}")
-            agent.end_match(my_avg, opp_avg)
+            if agent.match_rounds:  # only persist if we actually played rounds
+                agent.end_match(my_avg, opp_avg)
+            else:
+                print("[Session] No rounds played — skipping end_match.")
             return
 
         phase = state.get("phase", "moving")
@@ -277,17 +281,20 @@ def play_session(
             returns = state.get("returns") or {}
             my_avg = float(returns.get(my_name, 0.0)) if isinstance(returns, dict) else 0.0
             opp_avg = float(next((v for k, v in returns.items() if k != my_name), 0.0)) if isinstance(returns, dict) else 0.0
-            agent.end_match(my_avg, opp_avg)
+            if agent.match_rounds:
+                agent.end_match(my_avg, opp_avg)
             return
 
         # --- MESSAGING PHASE ---
         if phase == "messaging" or next_action in ("send_message", "terminate_messaging"):
             my_score, opp_score = _cumulative_scores(state, my_name)
             match_history = _extract_match_history(state, my_name)
-            # Patch in stored opponent messages for completed rounds
+            # Patch in stored messages for completed rounds
             for entry in match_history:
                 if entry["round"] in msg_log:
                     entry["opp_msg"] = msg_log[entry["round"]]
+                if entry["round"] in my_msg_log:
+                    entry["my_msg"] = my_msg_log[entry["round"]]
 
             # Compose our message (blind — don't see opponent's yet)
             if next_action != "terminate_messaging":
@@ -298,6 +305,7 @@ def play_session(
                     my_score=my_score,
                     opp_score=opp_score,
                 )
+                my_msg_log[current_round] = message_sent_this_round
                 resp = client.send_message(session_id, message_sent_this_round, game_server)
                 err = resp.get("error")
                 if err == "messages_quota_exceeded":
@@ -335,6 +343,8 @@ def play_session(
             for entry in match_history:
                 if entry["round"] in msg_log:
                     entry["opp_msg"] = msg_log[entry["round"]]
+                if entry["round"] in my_msg_log:
+                    entry["my_msg"] = my_msg_log[entry["round"]]
 
             action_int = agent.choose_action(
                 round_num=current_round,

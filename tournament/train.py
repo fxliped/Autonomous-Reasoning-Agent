@@ -26,8 +26,8 @@ if str(ROOT_DIR) not in sys.path:
 
 from agent.agent import append_reflection, create_client  # noqa: E402
 from games.pd_game import PrisonersDilemma  # noqa: E402
-from tournament.agent import TournamentAgent  # noqa: E402
-from tournament.rating import bradley_terry_ratings, print_ratings_table  # noqa: E402
+from tournament.core.agent import TournamentAgent  # noqa: E402
+from tournament.eval.rating import bradley_terry_ratings, print_ratings_table  # noqa: E402
 
 GAME_NAME = "prisoners_dilemma"
 
