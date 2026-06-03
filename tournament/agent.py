@@ -274,6 +274,100 @@ FINAL ACTION: <cooperate | defect>
 
 
 # =============================================================================
+# BAYESIAN OPPONENT CLASSIFIER
+# =============================================================================
+
+# P(opponent plays cooperate | type, context) — used as likelihood for Bayes update.
+# Each entry is (p_cooperate_round1, p_cooperate_later).
+# "later" means after we've seen each other's history.
+_TYPE_LIKELIHOODS: dict[str, tuple[float, float]] = {
+    "Always Defect":       (0.02, 0.02),
+    "Always Cooperate":    (0.97, 0.97),
+    "Tit-for-Tat":         (0.95, None),   # None = mirrors last agent move
+    "Grim Trigger":        (0.95, None),   # None = cooperates until first defection
+    "Pavlov":              (0.95, None),   # None = depends on last outcome
+    "Generous TFT":        (0.95, 0.88),
+    "Strategic/Adaptive":  (0.60, 0.55),
+}
+
+_UNIFORM_PRIOR = {t: 1.0 / len(_TYPE_LIKELIHOODS) for t in _TYPE_LIKELIHOODS}
+
+
+def _likelihood(
+    type_name: str,
+    opp_action: str,  # "cooperate" | "defect"
+    round_num: int,
+    history: list[dict],  # completed rounds so far (including current)
+) -> float:
+    """P(opp_action | type) for one round given history."""
+    cooperated = opp_action == "cooperate"
+    p_base, p_late = _TYPE_LIKELIHOODS[type_name]
+
+    if round_num == 1:
+        p_c = p_base
+    elif type_name == "Always Defect":
+        p_c = p_base
+    elif type_name == "Always Cooperate":
+        p_c = p_base
+    elif type_name == "Tit-for-Tat":
+        # Mirrors our previous action
+        prev = next((r for r in history if r["round"] == round_num - 1), None)
+        if prev:
+            p_c = 0.92 if prev.get("my_action") == "cooperate" else 0.05
+        else:
+            p_c = p_base
+    elif type_name == "Grim Trigger":
+        # Cooperates until first defection by us
+        we_ever_defected = any(
+            r.get("my_action") == "defect"
+            for r in history
+            if r["round"] < round_num
+        )
+        p_c = 0.05 if we_ever_defected else 0.93
+    elif type_name == "Pavlov":
+        # Repeat last move if scored >=2, else switch
+        prev = next((r for r in history if r["round"] == round_num - 1), None)
+        if prev:
+            opp_last = prev.get("opp_action", "cooperate")
+            opp_pts = prev.get("opp_pts", 0)
+            if opp_pts is not None and opp_pts >= 2:
+                p_c = 0.90 if opp_last == "cooperate" else 0.05
+            else:
+                p_c = 0.05 if opp_last == "cooperate" else 0.90
+        else:
+            p_c = p_base
+    else:  # Generous TFT, Strategic/Adaptive
+        p_c = p_late if p_late is not None else p_base
+
+    return p_c if cooperated else (1.0 - p_c)
+
+
+def bayes_update(
+    prior: dict[str, float],
+    opp_action: str,
+    round_num: int,
+    history: list[dict],
+) -> dict[str, float]:
+    """
+    Update P(type) given one observed opponent action via Bayes' theorem.
+    Returns normalized posterior.
+    """
+    posteriors = {}
+    for t, p in prior.items():
+        lik = _likelihood(t, opp_action, round_num, history)
+        posteriors[t] = p * lik
+
+    total = sum(posteriors.values()) or 1e-9
+    return {t: v / total for t, v in posteriors.items()}
+
+
+def top_classification(posterior: dict[str, float]) -> tuple[str, float]:
+    """Return (most_likely_type, confidence) from posterior distribution."""
+    best = max(posterior, key=lambda t: posterior[t])
+    return best, posterior[best]
+
+
+# =============================================================================
 # RESPONSE PARSERS
 # =============================================================================
 
@@ -400,16 +494,36 @@ class TournamentAgent:
         self._hypothesis_violations = 0  # rounds opponent acted against current hypothesis
         self._rank: int | None = None
         self._total_players: int | None = None
+        self._score_gap_to_above: float | None = None
+        self._opponent_rank: int | None = None
+        self._matches_remaining: int | None = None
+        self._type_posterior: dict[str, float] = dict(_UNIFORM_PRIOR)  # Bayesian type beliefs
 
     @property
     def match_rounds(self) -> list[dict]:
         """Read-only snapshot of completed rounds this match."""
         return list(self._match_rounds)
 
-    def update_leaderboard(self, rank: int, total_players: int) -> None:
-        """Call between matches to condition strategy on tournament standing."""
+    def update_leaderboard(
+        self,
+        rank: int,
+        total_players: int,
+        score_gap_to_above: float | None = None,
+        opponent_rank: int | None = None,
+        matches_remaining: int | None = None,
+    ) -> None:
+        """
+        Call before each match to inject current tournament standing.
+        score_gap_to_above: my avg score minus the score of the player ranked just above me
+                            (negative means I'm behind them).
+        opponent_rank: where this match's opponent sits on the leaderboard.
+        matches_remaining: how many matches left in this tournament round.
+        """
         self._rank = rank
         self._total_players = total_players
+        self._score_gap_to_above = score_gap_to_above
+        self._opponent_rank = opponent_rank
+        self._matches_remaining = matches_remaining
 
     def _leaderboard_block(self) -> str:
         if self._rank is None or self._total_players is None:
@@ -421,7 +535,40 @@ class TournamentAgent:
             mode = "AGGRESSIVE — need large swings. Accept -1 risk to attempt +5. Target weak opponents."
         else:
             mode = "BALANCED — cooperate with strong players (avoid costly wars), exploit low-ranked ones."
-        return f"LEADERBOARD: Rank {self._rank}/{self._total_players} — {mode}"
+        lines = [f"LEADERBOARD: Rank {self._rank}/{self._total_players} — {mode}"]
+
+        # End-game targeting: inject explicit advancement goal
+        if self._matches_remaining is not None and self._matches_remaining <= 2:
+            if self._score_gap_to_above is not None and self._score_gap_to_above < 0:
+                needed = abs(self._score_gap_to_above)
+                lines.append(
+                    f"END-GAME TARGET: You are {needed:.2f} avg pts/round behind rank "
+                    f"{self._rank - 1}. With {self._matches_remaining} match(es) left, "
+                    f"you need to score aggressively to advance. Maximize extraction — "
+                    f"this is not a round to settle for mutual cooperation."
+                )
+            elif self._score_gap_to_above is not None and self._score_gap_to_above >= 0:
+                lines.append(
+                    f"END-GAME DEFENSE: You lead rank {self._rank + 1} by "
+                    f"{self._score_gap_to_above:.2f} avg pts/round with "
+                    f"{self._matches_remaining} match(es) left. Protect the lead — "
+                    f"favor safe +2 over risky +5 attempts."
+                )
+
+        if self._opponent_rank is not None:
+            opp_pct = self._opponent_rank / self._total_players
+            if opp_pct >= 0.75:
+                lines.append(
+                    f"OPPONENT RANK: {self._opponent_rank}/{self._total_players} — "
+                    f"bottom-tier opponent. Low retaliation threat. Maximize extraction."
+                )
+            elif opp_pct <= 0.25:
+                lines.append(
+                    f"OPPONENT RANK: {self._opponent_rank}/{self._total_players} — "
+                    f"top-tier opponent. Costly war not worth it. Favor cooperation unless clearly exploited."
+                )
+
+        return "\n".join(lines)
 
     def _should_debate(self, round_num: int, total_rounds: int) -> bool:
         """Return True when a 3-agent debate adds more value than single-agent reasoning."""
@@ -527,6 +674,16 @@ class TournamentAgent:
         MOVING PHASE: choose action after seeing opponent's message.
         Returns 0 (Cooperate) or 1 (Defect).
         """
+        # Build Bayesian classification line to inject into context
+        bayes_type, bayes_conf = top_classification(self._type_posterior)
+        top3 = sorted(self._type_posterior.items(), key=lambda x: -x[1])[:3]
+        bayes_line = (
+            f"BAYESIAN CLASSIFICATION: {bayes_type} ({bayes_conf:.0%} confident) | "
+            + " / ".join(f"{t.split('/')[0]} {p:.0%}" for t, p in top3)
+        ) if round_num > 1 else ""
+        lb = self._leaderboard_block()
+        extra = "\n".join(x for x in [bayes_line, lb] if x)
+
         context = _choose_action_context(
             round_num=round_num,
             total_rounds=total_rounds,
@@ -538,7 +695,7 @@ class TournamentAgent:
             opponent_profile=self.profile,
             hypothesis=self._last_hypothesis,
             hypothesis_violations=self._hypothesis_violations,
-            leaderboard_block=self._leaderboard_block(),
+            leaderboard_block=extra,
         )
 
         if self._should_debate(round_num, total_rounds):
@@ -585,6 +742,21 @@ class TournamentAgent:
                 r["my_pts"] = my_pts
                 r["opp_pts"] = opp_pts
                 break
+
+        # Bayesian update: refine type posterior from observed action
+        self._type_posterior = bayes_update(
+            self._type_posterior, opp_action, round_num, self._match_rounds
+        )
+        bayes_type, bayes_conf = top_classification(self._type_posterior)
+        # Override LLM's self-reported hypothesis when Bayesian confidence exceeds it
+        if bayes_conf > self._last_confidence + 0.1:
+            self._last_hypothesis = bayes_type
+            self._last_confidence = bayes_conf
+        print(
+            f"[Bayes R{round_num}] {bayes_type} ({bayes_conf:.0%}) | "
+            + " ".join(f"{t.split('/')[0]}:{p:.0%}" for t, p in
+                       sorted(self._type_posterior.items(), key=lambda x: -x[1])[:3])
+        )
 
         # Intra-match adaptation: detect when opponent contradicts our hypothesis
         h = self._last_hypothesis

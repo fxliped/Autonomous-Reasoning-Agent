@@ -423,17 +423,36 @@ def run_tournament(client: AltruAgentClient, tournament_id: str) -> None:
 
                 agent = TournamentAgent(opponent_id=opp_id)
 
-                # Inject leaderboard position so agent conditions its strategy on rank
+                # Inject leaderboard position + end-game targeting data
                 lb = t.get("leaderboard") or []
                 if lb:
-                    my_entry = next(
-                        (e for e in lb if e.get("name") == getattr(client, "agent_name", "")),
-                        None,
-                    )
+                    my_name = getattr(client, "agent_name", "")
+                    my_entry = next((e for e in lb if e.get("name") == my_name), None)
+                    opp_lb = next((e for e in lb if e.get("name") == opp_id), None)
+
                     if my_entry:
+                        my_rank = int(my_entry.get("rank", len(lb)))
+                        my_score = float(my_entry.get("average_payoff") or 0.0)
+
+                        # Score of the player ranked just above us (rank - 1)
+                        above = next(
+                            (e for e in lb if int(e.get("rank", 0)) == my_rank - 1),
+                            None,
+                        )
+                        score_gap = (
+                            my_score - float(above.get("average_payoff", my_score))
+                            if above else None
+                        )
+                        # Matches remaining = total participants - 1 - matches played so far
+                        matches_played = len(t.get("completed_sessions") or [])
+                        matches_remaining = max(0, len(roster) - 1 - matches_played)
+
                         agent.update_leaderboard(
-                            rank=int(my_entry.get("rank", len(lb))),
+                            rank=my_rank,
                             total_players=len(lb),
+                            score_gap_to_above=score_gap,
+                            opponent_rank=int(opp_lb.get("rank", len(lb))) if opp_lb else None,
+                            matches_remaining=matches_remaining,
                         )
 
                 play_session(client, session_id, agent, game_server)
