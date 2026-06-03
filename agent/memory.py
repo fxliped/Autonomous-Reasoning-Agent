@@ -72,11 +72,12 @@ def format_opponent_context(profile: dict) -> str:
             f"Classified strategy: {profile['classified_type']} (confidence: {conf})"
         )
 
-    adv = profile["total_my_score"] - profile["total_opp_score"]
+    my_total = profile.get("total_my_score", 0) or 0
+    opp_total = profile.get("total_opp_score", 0) or 0
+    adv = my_total - opp_total
     sign = "+" if adv >= 0 else ""
     lines.append(
-        f"Cumulative score: you {profile['total_my_score']} vs them {profile['total_opp_score']} "
-        f"({sign}{adv} net)"
+        f"Cumulative score: you {my_total} vs them {opp_total} ({sign}{adv} net)"
     )
 
     if profile.get("match_history"):
