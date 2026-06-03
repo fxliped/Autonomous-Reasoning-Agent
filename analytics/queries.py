@@ -207,6 +207,38 @@ def phase_adherence(game_name: str = "prisoners_dilemma") -> dict[str, dict]:
     return result
 
 
+def highest_regret_rounds(
+    game_name: str = "prisoners_dilemma",
+    last_n_runs: int = 10,
+    top_n: int = 5,
+) -> list[dict]:
+    """
+    Return the top N rounds with the highest counterfactual regret across recent matches.
+    Regret > 0 means the other action would have scored more points.
+    These are the clearest credit-assignment signals for the judge and strategy review.
+    """
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.run_id, r.round_num, r.my_action, r.opp_action,
+                   r.my_pts, r.counterfactual_pts, r.regret
+            FROM rounds r
+            JOIN runs u ON u.run_id = r.run_id
+            WHERE u.game_name = ?
+              AND r.regret IS NOT NULL
+              AND r.regret > 0
+              AND u.run_id IN (
+                  SELECT run_id FROM runs WHERE game_name = ?
+                  ORDER BY rowid DESC LIMIT ?
+              )
+            ORDER BY r.regret DESC
+            LIMIT ?
+            """,
+            (game_name, game_name, last_n_runs, top_n),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def top_opponents(n: int = 5) -> list[dict]:
     """Return the N opponents we've played the most, with win rate and score differential."""
     with get_conn() as conn:

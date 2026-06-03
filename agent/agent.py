@@ -184,6 +184,19 @@ def append_reflection(
     return path
 
 
+def load_strategy_updates() -> str:
+    """Load the most recent strategy update from strategy_updates.md, if any."""
+    path = REFLECTIONS_DIR / "strategy_updates.md"
+    if not path.exists():
+        return ""
+    import re as _re
+    content = path.read_text(encoding="utf-8").strip()
+    # Return only the most recent update entry
+    sections = _re.split(r"(?=^## Strategy Update)", content, flags=_re.MULTILINE)
+    entries = [s for s in sections if s.startswith("## Strategy Update")]
+    return entries[-1].strip() if entries else ""
+
+
 def build_system_prompt(
     game_prompt: str,
     game_name: str | None = None,
@@ -197,11 +210,21 @@ def build_system_prompt(
                                Use for game runners that dispatch tool calls between turns.
     use_react=False:           omit BASE_REACT_PROMPT. Use for single-shot structured CoT agents
                                (e.g. TournamentAgent) where no tool loop runs.
+
+    Injection order (when all present):
+      BASE_REACT_PROMPT → STRATEGY UPDATE → PRIOR REFLECTIONS → game_prompt
+    Strategy updates sit above per-match reflections so they frame how lessons are interpreted.
     """
     sections = []
     if use_react:
         sections.append(BASE_REACT_PROMPT)
     if game_name and use_reflections:
+        strategy_update = load_strategy_updates()
+        if strategy_update:
+            sections.append(
+                "STRATEGY UPDATE (from post-tournament review — supersedes older defaults):\n"
+                f"{strategy_update}"
+            )
         reflections = load_reflections(game_name)
         if reflections:
             sections.append(

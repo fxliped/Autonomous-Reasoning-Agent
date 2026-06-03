@@ -161,6 +161,72 @@ def _history_block(match_history: list[dict]) -> str:
     return "PREVIOUS ROUNDS:\n" + "\n".join(lines)
 
 
+def _last_round_review(match_history: list[dict]) -> str:
+    """Counterfactual review of the most recent completed round."""
+    if not match_history:
+        return ""
+    last = match_history[-1]
+    my_a = last.get("my_action", "?")
+    opp_a = last.get("opp_action", "?")
+    if "?" in (my_a, opp_a):
+        return ""
+    my_pts = last.get("my_pts", 0) or 0
+    _PAYOFFS = {
+        ("cooperate", "cooperate"): 2, ("cooperate", "defect"): -1,
+        ("defect",    "cooperate"): 5, ("defect",    "defect"):   0,
+    }
+    alt = "defect" if my_a == "cooperate" else "cooperate"
+    alt_pts = _PAYOFFS.get((alt, opp_a), 0)
+    delta = alt_pts - my_pts
+    if delta > 0:
+        verdict = f"{alt.upper()} would have scored {alt_pts:+d} ({delta:+d} pts better)"
+    elif delta < 0:
+        verdict = f"{my_a.upper()} was optimal ({alt.upper()} would have scored {alt_pts:+d})"
+    else:
+        verdict = "both choices yield same result vs. their move"
+    return (
+        f"LAST ROUND REVIEW (R{last['round']}): "
+        f"You {my_a.upper()} | they {opp_a.upper()} → {my_pts:+d} pts. {verdict}."
+    )
+
+
+def _self_pattern_block() -> str:
+    """
+    Agent's own historical cooperation/deception pattern from the analytics DB.
+    Surfaces exploitable habits so the agent can vary tactics and stay unpredictable.
+    Returns empty string if there's not enough data yet.
+    """
+    try:
+        from analytics.queries import deception_rate, decision_trends  # noqa: PLC0415
+        stats = deception_rate("agent", "prisoners_dilemma")
+        if stats.get("total_rounds", 0) < 8:
+            return ""
+        d_rate = stats.get("deception_rate", 0.0)
+        trends = decision_trends("prisoners_dilemma", last_n_runs=10)
+        coop_rate = (
+            sum(t.get("coop_rate", 0.0) for t in trends) / len(trends)
+            if trends else 0.0
+        )
+        warnings = []
+        if d_rate >= 0.35:
+            warnings.append(f"HIGH deception ({d_rate:.0%}) — opponents with memory may preemptively defect")
+        elif d_rate >= 0.15:
+            warnings.append(f"MODERATE deception ({d_rate:.0%}) — pattern detectable over 3+ matches")
+        else:
+            warnings.append(f"LOW deception ({d_rate:.0%}) — you signal as cooperative; use this to prime extraction")
+        if coop_rate >= 0.75:
+            warnings.append("cooperation rate very high — you may be signaling as naive; consider earlier defection")
+        elif coop_rate <= 0.35:
+            warnings.append("cooperation rate very low — opponents likely classify you as defector and defect first")
+        warn_str = " | ".join(warnings)
+        return (
+            f"YOUR PATTERN ({stats['total_rounds']} rounds): "
+            f"Coop {coop_rate:.0%} | {warn_str}. Vary your tactics."
+        )
+    except Exception:
+        return ""
+
+
 def _grudge_warning(profile: dict) -> str:
     """Warning injected when we've previously defected against this opponent."""
     if profile.get("matches_played", 0) == 0:
@@ -257,6 +323,7 @@ def build_action_context(
     leaderboard_block: str = "",
     behavioral: BehavioralProfile | None = None,
     p_opp_c: float = 0.5,
+    self_pattern: str = "",
 ) -> str:
     """Context for MOVING PHASE — opponent's current message is now visible."""
     rounds_left = total_rounds - round_num + 1
@@ -271,16 +338,20 @@ def build_action_context(
     ev_d = p_opp_c * 5
     ev_diff = ev_d - ev_c
 
+    last_review = _last_round_review(match_history)
+    last_review_line = f"\n{last_review}" if last_review else ""
+
     behavioral_line = (
         f"Behavioral P(opp cooperates) = {p_opp_c:.0%} | {behavioral.summary()}"
         if behavioral and behavioral.rounds_seen > 0
         else f"P(opp cooperates) = {p_opp_c:.0%} (no behavioral data yet — using prior)"
     )
     gap_block = score_gap_block(my_score, opp_score, round_num, total_rounds, p_opp_c, ev_c, ev_d)
+    self_pattern_line = f"\n{self_pattern}" if self_pattern else ""
 
     return f"""
 MOVING PHASE — Round {round_num}/{total_rounds} [{arc_name}] | {rounds_left} round(s) left
-Score: me {my_score:.1f} | them {opp_score:.1f}{reclassify_banner}{lb_line}
+Score: me {my_score:.1f} | them {opp_score:.1f}{reclassify_banner}{lb_line}{last_review_line}
 
 ARC DIRECTIVE: {arc_directive}
 
@@ -318,7 +389,7 @@ Conclusion: <cooperate | defect and why>
 {behavioral_line}
 EV(cooperate) = {p_opp_c:.2f}×2 + {1-p_opp_c:.2f}×(-1) = {ev_c:.2f}
 EV(defect)    = {p_opp_c:.2f}×5 + {1-p_opp_c:.2f}×0    = {ev_d:.2f}
-EV advantage of defection: {ev_diff:+.2f} pts/round
+EV advantage of defection: {ev_diff:+.2f} pts/round{self_pattern_line}
 Override P(opp cooperates) if you have strong evidence (cite rounds): <updated_p or "no override">
 Decision: <cooperate | defect>
 Reason: <one sentence>

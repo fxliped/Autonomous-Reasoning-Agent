@@ -52,6 +52,13 @@ ORACLE_SCORES: dict[str, float] = {
 
 _SKIP_EFFICIENCY = {"always_defect", "random"}
 
+# Train/eval split — prevents overfitting to benchmark strategies.
+# TRAIN strategies may appear in training reflections and train.py self-play.
+# EVAL_ONLY strategies are held out: never generate training data, used only here.
+# If oracle efficiency degrades on EVAL_ONLY, the agent is overfitting to TRAIN patterns.
+TRAIN_STRATEGIES  = {"always_cooperate", "pavlov", "tit_for_tat", "always_defect", "random"}
+EVAL_ONLY_STRATEGIES = {"grim_trigger", "generous_tft"}
+
 
 # =============================================================================
 # TIER 1 — FAST BENCHMARKS (no LLM)
@@ -237,7 +244,7 @@ _SCENARIOS = [
         ],
         "my_score": 14.0, "opp_score": 14.0,
         "expected_action": 1,
-        "rationale": "Final round with no retaliation possible against cooperative opponent.",
+        "rationale": "Final round — no retaliation possible. Defection is strictly dominant.",
     },
     {
         "name": "Always Defector confirmed — defect back",
@@ -264,6 +271,47 @@ _SCENARIOS = [
         "my_score": 0.0, "opp_score": 0.0,
         "expected_action": 0,
         "rationale": "First round — cooperate to establish baseline and classify opponent.",
+    },
+    # ── Reward-hacking detection scenarios ──────────────────────────────────────
+    # These test whether the agent is over-cooperating (cooperation inflation)
+    # or ignoring exploitation windows — the two main reward-hacking failure modes.
+    {
+        "name": "Naive cooperator mid-match — exploit now",
+        "description": "Opponent cooperated every round including after our defection — Naive Cooperator. "
+                       "Round 5/8 with safe lead. Should defect to extract value.",
+        "round_num": 5, "total_rounds": 8,
+        "opp_msg": "I always cooperate no matter what.",
+        "my_msg": "Mutual cooperation is optimal.",
+        "match_history": [
+            {"round": 1, "my_action": "cooperate", "opp_action": "cooperate",
+             "my_pts": 2, "opp_pts": 2, "opp_msg": "always cooperate"},
+            {"round": 2, "my_action": "cooperate", "opp_action": "cooperate",
+             "my_pts": 2, "opp_pts": 2, "opp_msg": "always cooperate"},
+            {"round": 3, "my_action": "defect",    "opp_action": "cooperate",
+             "my_pts": 5, "opp_pts": -1, "opp_msg": "still cooperating"},
+            {"round": 4, "my_action": "cooperate", "opp_action": "cooperate",
+             "my_pts": 2, "opp_pts": 2, "opp_msg": "I forgive, still cooperating"},
+        ],
+        "my_score": 11.0, "opp_score": 5.0,
+        "expected_action": 1,
+        "rationale": "Confirmed Naive Cooperator who forgives — defecting now costs nothing and scores +5.",
+    },
+    {
+        "name": "Cooperative message but chronic defector — ignore the message",
+        "description": "Opponent says cooperative things but has defected every round. "
+                       "Message credibility is zero — should defect regardless of message.",
+        "round_num": 5, "total_rounds": 8,
+        "opp_msg": "Let's work together this round, I promise I'll cooperate.",
+        "my_msg": "I'm open to cooperation.",
+        "match_history": [
+            {"round": r, "my_action": "cooperate", "opp_action": "defect",
+             "my_pts": -1, "opp_pts": 5,
+             "opp_msg": "let's cooperate"}
+            for r in range(1, 5)
+        ],
+        "my_score": -4.0, "opp_score": 20.0,
+        "expected_action": 1,
+        "rationale": "100% message lie rate — cooperative message is noise. Action history is the signal.",
     },
 ]
 

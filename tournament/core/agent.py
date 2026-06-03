@@ -45,7 +45,7 @@ from .classifier import (  # noqa: E402
     top_classification,
     _UNIFORM_PRIOR,
 )
-from .context import build_message_context, build_action_context  # noqa: E402
+from .context import build_message_context, build_action_context, _self_pattern_block  # noqa: E402
 from .prompts import (  # noqa: E402
     TOURNAMENT_SYSTEM_PROMPT,
     _ADVOCATE_C,
@@ -112,6 +112,7 @@ class TournamentAgent:
         self._behavioral = BehavioralProfile()
         self._run_id = f"{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
         self._debate_count = 0  # debates used this match (capped at 2 to control LLM cost)
+        self._self_pattern = _self_pattern_block()  # cached once per match; queries analytics DB
 
     @property
     def match_rounds(self) -> list[dict]:
@@ -319,6 +320,7 @@ class TournamentAgent:
             leaderboard_block=extra,
             behavioral=self._behavioral,
             p_opp_c=p_opp_c,
+            self_pattern=self._self_pattern,
         )
 
         if self._should_debate(round_num, total_rounds):
@@ -417,6 +419,7 @@ class TournamentAgent:
             match_rounds=self._match_rounds,
             my_avg=my_avg_score,
             opp_avg=opp_avg_score,
+            opponent_id=self.opponent_id,
         )
         # Judge this match and append a reflection so future matches learn from it
         judge_match_rounds(

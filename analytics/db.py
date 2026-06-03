@@ -38,6 +38,13 @@ DB_PATH = ROOT_DIR / "data" / "agent.db"
 
 _COOP_WORDS = ("cooperat", "together", "mutual", "both", "trust", "fair", "agree", "let's")
 
+_PAYOFFS: dict[tuple[str, str], int] = {
+    ("cooperate", "cooperate"): 2,
+    ("cooperate", "defect"):   -1,
+    ("defect",    "cooperate"): 5,
+    ("defect",    "defect"):    0,
+}
+
 _SCHEMA = """
 PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;
@@ -68,15 +75,17 @@ CREATE TABLE IF NOT EXISTS react_steps (
 );
 
 CREATE TABLE IF NOT EXISTS rounds (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_id     TEXT REFERENCES runs(run_id),
-    round_num  INTEGER,
-    my_action  TEXT,
-    opp_action TEXT,
-    my_msg     TEXT,
-    opp_msg    TEXT,
-    my_pts     REAL,
-    opp_pts    REAL
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id          TEXT REFERENCES runs(run_id),
+    round_num       INTEGER,
+    my_action       TEXT,
+    opp_action      TEXT,
+    my_msg          TEXT,
+    opp_msg         TEXT,
+    my_pts          REAL,
+    opp_pts         REAL,
+    counterfactual_pts  REAL,   -- what I would have scored with the other action
+    regret              REAL    -- counterfactual_pts - my_pts (positive = I left points on table)
 );
 
 CREATE TABLE IF NOT EXISTS deception_events (
@@ -127,10 +136,37 @@ _LEGACY_OPPONENTS_DIR = ROOT_DIR / "agent" / "memory" / "opponents"
 # ─── CONNECTION ───────────────────────────────────────────────────────────────
 
 def init_db() -> None:
-    """Create all tables. Idempotent."""
+    """Create all tables and apply column migrations. Idempotent."""
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(DB_PATH) as conn:
         conn.executescript(_SCHEMA)
+        # Column migrations: ALTER TABLE is safe to run repeatedly via existence check
+        existing = {
+            r[1]
+            for r in conn.execute("PRAGMA table_info(rounds)").fetchall()
+        }
+        for col, definition in [
+            ("counterfactual_pts", "REAL"),
+            ("regret",             "REAL"),
+        ]:
+            if col not in existing:
+                conn.execute(f"ALTER TABLE rounds ADD COLUMN {col} {definition}")
+        # Backfill regret for any rows missing it (e.g. ingested before migration)
+        stale = conn.execute(
+            "SELECT id, my_action, opp_action, my_pts FROM rounds WHERE regret IS NULL"
+        ).fetchall()
+        for row in stale:
+            my_a = (row[1] or "").lower()
+            opp_a = (row[2] or "").lower()
+            my_pts = row[3]
+            if my_a and opp_a and my_pts is not None:
+                alt = "defect" if my_a == "cooperate" else "cooperate"
+                cf = float(_PAYOFFS.get((alt, opp_a), 0))
+                reg = cf - float(my_pts)
+                conn.execute(
+                    "UPDATE rounds SET counterfactual_pts=?, regret=? WHERE id=?",
+                    (cf, reg, row[0]),
+                )
 
 
 @contextmanager
@@ -165,10 +201,21 @@ def _insert_round_and_deception(
     my_pts: float | None,
     opp_pts: float | None,
 ) -> None:
+    # Compute counterfactual regret: what would the other action have scored?
+    alt_action = "defect" if my_action == "cooperate" else "cooperate"
+    cf_pts: float | None = None
+    regret: float | None = None
+    if my_action and opp_action and my_pts is not None:
+        cf_pts = float(_PAYOFFS.get((alt_action, opp_action), 0))
+        regret = cf_pts - float(my_pts)
+
     conn.execute(
-        "INSERT INTO rounds (run_id, round_num, my_action, opp_action, my_msg, opp_msg, my_pts, opp_pts)"
-        " VALUES (?,?,?,?,?,?,?,?)",
-        (run_id, round_num, my_action, opp_action, my_msg or "", opp_msg or "", my_pts, opp_pts),
+        "INSERT INTO rounds"
+        " (run_id, round_num, my_action, opp_action, my_msg, opp_msg, my_pts, opp_pts,"
+        "  counterfactual_pts, regret)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (run_id, round_num, my_action, opp_action, my_msg or "", opp_msg or "",
+         my_pts, opp_pts, cf_pts, regret),
     )
     for actor, msg, action in [("agent", my_msg, my_action), ("opponent", opp_msg, opp_action)]:
         intent = _msg_intent(msg)
@@ -261,10 +308,15 @@ def ingest_match_rounds(
     match_rounds: list[dict],
     my_avg: float = 0.0,
     opp_avg: float = 0.0,
+    opponent_id: str | None = None,
 ) -> None:
     """
     Ingest tournament match_rounds (from TournamentAgent.end_match) into analytics tables.
     match_rounds: [{round, my_msg, opp_msg, my_action, opp_action, my_pts, opp_pts}, ...]
+
+    If opponent_id is provided, each opponent message is logged to opponent_messages with
+    was_effective=1 when they followed through (coop msg → cooperate) and 0 when they lied
+    (coop msg → defect). This builds a per-opponent raw message credibility record.
     """
     outcome = "WIN" if my_avg > opp_avg else "LOSS" if opp_avg > my_avg else "DRAW"
     with get_conn() as conn:
@@ -282,6 +334,17 @@ def ingest_match_rounds(
                 r.get("opp_msg", "") or "",
                 r.get("my_pts"), r.get("opp_pts"),
             )
+            # Per-round opponent message credibility: log raw text + whether they followed through
+            if opponent_id:
+                opp_msg = (r.get("opp_msg") or "").strip()
+                opp_action = (r.get("opp_action") or "").lower()
+                if opp_msg and _msg_intent(opp_msg) == "cooperative":
+                    was_effective = int(opp_action == "cooperate")
+                    conn.execute(
+                        "INSERT INTO opponent_messages (opponent_id, message_text, was_effective)"
+                        " VALUES (?,?,?)",
+                        (opponent_id, opp_msg, was_effective),
+                    )
 
 
 # ─── OPPONENT MEMORY ──────────────────────────────────────────────────────────
