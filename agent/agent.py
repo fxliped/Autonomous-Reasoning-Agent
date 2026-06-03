@@ -26,7 +26,7 @@ Observation will be the result of that tool.
 """.strip()
 
 # Single source of truth for default models — used by both detect_provider() and LLMClient.
-_OPENAI_DEFAULT_MODEL = "gpt-4o-mini"
+_OPENAI_DEFAULT_MODEL = "gpt-4.1"
 _GEMINI_DEFAULT_MODEL = "gemini-2.5-flash"
 
 
@@ -141,14 +141,23 @@ def reflection_path(game_name: str) -> Path:
     return REFLECTIONS_DIR / f"{safe_name}.md"
 
 
-def load_reflections(game_name: str) -> str:
+def load_reflections(game_name: str, max_reflections: int = 8) -> str:
+    """Load the most recent N reflection entries for a game."""
     path = reflection_path(game_name)
     if not path.exists():
         return ""
     content = path.read_text(encoding="utf-8").strip()
     if "No judged reflections yet." in content and "## Reflection" not in content:
         return ""
-    return content
+    # Split on section headers and return the last max_reflections entries
+    import re as _re
+    sections = _re.split(r"(?=^## Reflection)", content, flags=_re.MULTILINE)
+    # First element may be the title line (# Game Reflections) — keep it, cap the rest
+    header = sections[0] if not sections[0].startswith("## Reflection") else ""
+    entries = [s for s in sections if s.startswith("## Reflection")]
+    recent = entries[-max_reflections:]
+    parts = ([header.strip()] if header.strip() else []) + recent
+    return "\n\n".join(parts).strip()
 
 
 def append_reflection(

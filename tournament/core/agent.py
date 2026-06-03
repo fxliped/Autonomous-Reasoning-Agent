@@ -189,7 +189,7 @@ class TournamentAgent:
         if self._debate_count >= self._MAX_DEBATES_PER_MATCH:
             return False
         is_endgame = (total_rounds - round_num) <= 1
-        is_uncertain = self._last_confidence < 0.5 and round_num > 2
+        is_uncertain = self._last_confidence < 0.6 and round_num > 2
         is_obvious = self._last_hypothesis == "Always Defect" and self._last_confidence >= 0.7
         return (is_endgame or is_uncertain) and not is_obvious
 
@@ -399,6 +399,8 @@ class TournamentAgent:
 
     def end_match(self, my_avg_score: float, opp_avg_score: float) -> None:
         """Summarize match via LLM, update opponent profile, persist to DB, log analytics."""
+        from agent.tracing import judge_match_rounds  # noqa: PLC0415
+
         self.profile = update_profile_after_match(
             self.profile, self._match_rounds, my_avg_score, opp_avg_score, self.client,
         )
@@ -409,13 +411,25 @@ class TournamentAgent:
             "opp_avg_score": opp_avg_score,
             "rounds": self._match_rounds,
         })
-        # Log to analytics DB for trajectory analysis
         ingest_match_rounds(
             run_id=self._run_id,
             game_name=GAME_NAME,
             match_rounds=self._match_rounds,
             my_avg=my_avg_score,
             opp_avg=opp_avg_score,
+        )
+        # Judge this match and append a reflection so future matches learn from it
+        judge_match_rounds(
+            match_rounds=self._match_rounds,
+            my_avg_score=my_avg_score,
+            opp_avg_score=opp_avg_score,
+            opponent_id=self.opponent_id,
+            classified_type=self.profile.get("classified_type", "Unknown"),
+            type_confidence=float(self.profile.get("type_confidence") or 0.0),
+            deception_count=self._deception_count,
+            client=self.client,
+            run_id=self._run_id,
+            append_to_reflections=True,
         )
         self._match_rounds = []
         print(f"\n[TournamentAgent] Profile saved for '{self.opponent_id}'.")
