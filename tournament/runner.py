@@ -8,10 +8,10 @@ Setup (.env):
   ALTRUAGENT_API_KEY=sk_agent_xxx
 
 Usage:
-  python games/altruagent_runner.py                        # join queue, play forever
-  python games/altruagent_runner.py --session <id>         # play one specific session
-  python games/altruagent_runner.py --tournament <id>      # resume a tournament
-  python games/altruagent_runner.py --signup "MyAgentName" # register once
+  python tournament/runner.py                        # join queue, play forever
+  python tournament/runner.py --session <id>         # play one specific session
+  python tournament/runner.py --tournament <id>      # resume a tournament
+  python tournament/runner.py --signup "MyAgentName" # register once
 """
 
 import sys
@@ -29,7 +29,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from games.tournament_agent import TournamentAgent  # noqa: E402
+from tournament.agent import TournamentAgent  # noqa: E402
 
 CONTROL = "https://llw83cu38l.execute-api.us-west-2.amazonaws.com"
 GAME_SERVER_FALLBACK = "http://GameAp-Servi-tOMiXPVqPFIe-185462629.us-west-2.elb.amazonaws.com"
@@ -58,7 +58,9 @@ class AltruAgentClient:
     def login(self) -> None:
         data = self._post("/auth/agent/login", {"api_key": self.api_key}, auth=False)
         self.access_token = data["access_token"]
-        print(f"[Auth] Logged in. Token obtained.")
+        me = self._get("/auth/agent/me")
+        self.agent_name: str = me.get("name", "")
+        print(f"[Auth] Logged in as '{self.agent_name}'.")
 
     def _relogin_if_401(self, resp: requests.Response) -> bool:
         if resp.status_code == 401:
@@ -420,6 +422,20 @@ def run_tournament(client: AltruAgentClient, tournament_id: str) -> None:
                 opp_id = opp_entry.get("name") or opp_entry.get("agent_id") or "unknown"
 
                 agent = TournamentAgent(opponent_id=opp_id)
+
+                # Inject leaderboard position so agent conditions its strategy on rank
+                lb = t.get("leaderboard") or []
+                if lb:
+                    my_entry = next(
+                        (e for e in lb if e.get("name") == getattr(client, "agent_name", "")),
+                        None,
+                    )
+                    if my_entry:
+                        agent.update_leaderboard(
+                            rank=int(my_entry.get("rank", len(lb))),
+                            total_players=len(lb),
+                        )
+
                 play_session(client, session_id, agent, game_server)
 
         elif action_code == "wait_for_child_match":

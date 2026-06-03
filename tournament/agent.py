@@ -17,7 +17,7 @@ The two-phase round structure mirrors the platform exactly:
     agent.end_match(my_avg_score, opp_avg_score)  # per-round averages
 
 Test locally:
-    python games/tournament_agent.py --strategy tit_for_tat
+    python tournament/agent.py --strategy tit_for_tat
 """
 
 import re
@@ -173,6 +173,7 @@ def _compose_message_context(
     opp_score: float,
     opponent_profile: dict,
     deception_count: int = 0,
+    leaderboard_block: str = "",
 ) -> str:
     """Context for MESSAGING PHASE — opponent's current message not yet visible."""
     rounds_left = total_rounds - round_num + 1
@@ -182,9 +183,10 @@ def _compose_message_context(
         if prior_rounds > 0 else ""
     )
     grudge = _grudge_warning(opponent_profile)
+    lb_line = f"\n{leaderboard_block.strip()}" if leaderboard_block.strip() else ""
     return f"""
 MESSAGING PHASE — Round {round_num}/{total_rounds} | {rounds_left} round(s) left
-Score: me {my_score:.1f} | them {opp_score:.1f}{deception_note}{grudge}
+Score: me {my_score:.1f} | them {opp_score:.1f}{deception_note}{grudge}{lb_line}
 
 {format_opponent_context(opponent_profile)}
 
@@ -219,6 +221,7 @@ def _choose_action_context(
     opponent_profile: dict,
     hypothesis: str = "Unknown",
     hypothesis_violations: int = 0,
+    leaderboard_block: str = "",
 ) -> str:
     """Context for MOVING PHASE — opponent's current message is now visible."""
     rounds_left = total_rounds - round_num + 1
@@ -226,9 +229,10 @@ def _choose_action_context(
         f"\n⚠ RE-EXAMINE CLASSIFICATION: Opponent acted against your '{hypothesis}' "
         f"hypothesis {hypothesis_violations} time(s). Ignore prior label — reason from raw move history.\n"
     ) if hypothesis_violations >= 2 else ""
+    lb_line = f"\n{leaderboard_block.strip()}" if leaderboard_block.strip() else ""
     return f"""
 MOVING PHASE — Round {round_num}/{total_rounds} | {rounds_left} round(s) left
-Score: me {my_score:.1f} | them {opp_score:.1f}{reclassify_banner}
+Score: me {my_score:.1f} | them {opp_score:.1f}{reclassify_banner}{lb_line}
 
 {format_opponent_context(opponent_profile)}
 
@@ -306,6 +310,49 @@ def _parse_action(response: str) -> int:
 
 
 # =============================================================================
+# DEBATE PROMPTS
+# =============================================================================
+
+_ADVOCATE_C = """
+You are ADVOCATE COOPERATE. Make the strongest possible case for cooperating this round.
+Use specific round numbers, move history, and EV math. Be persuasive — your job is to win the argument.
+
+{context}
+
+End your argument with exactly one line:
+ADVOCATE COOPERATE: <2-sentence summary of your strongest points>
+""".strip()
+
+_ADVOCATE_D = """
+You are ADVOCATE DEFECT. Make the strongest possible case for defecting this round.
+Use specific round numbers, move history, and EV math. Be persuasive — your job is to win the argument.
+
+{context}
+
+End your argument with exactly one line:
+ADVOCATE DEFECT: <2-sentence summary of your strongest points>
+""".strip()
+
+_JUDGE = """
+You are the JUDGE. Two strategic advocates have argued about what to do this round.
+
+[COOPERATE ARGUMENT]:
+{cooperate_case}
+
+[DEFECT ARGUMENT]:
+{defect_case}
+
+{context}
+
+Critically evaluate both arguments. Do not default to cooperation — if defection has a clear
+advantage here, rule for defection. State the stronger argument and make the final call.
+
+FINAL ACTION: <cooperate | defect>
+REASON: <one sentence>
+""".strip()
+
+
+# =============================================================================
 # TOURNAMENT AGENT
 # =============================================================================
 
@@ -334,9 +381,15 @@ class TournamentAgent:
 
     PAYOFFS = PrisonersDilemma.PAYOFFS
 
-    def __init__(self, opponent_id: str = "unknown", total_rounds: int = 10):
+    def __init__(
+        self,
+        opponent_id: str = "unknown",
+        total_rounds: int = 10,
+        use_debate: bool = True,
+    ):
         self.opponent_id = opponent_id
         self.total_rounds = total_rounds
+        self.use_debate = use_debate
         self.client = create_client()
         self.profile = load_opponent_profile(opponent_id)
         self._match_rounds: list[dict] = []
@@ -345,11 +398,87 @@ class TournamentAgent:
         self._last_hypothesis = "Unknown"
         self._last_confidence = 0.0
         self._hypothesis_violations = 0  # rounds opponent acted against current hypothesis
+        self._rank: int | None = None
+        self._total_players: int | None = None
 
     @property
     def match_rounds(self) -> list[dict]:
         """Read-only snapshot of completed rounds this match."""
         return list(self._match_rounds)
+
+    def update_leaderboard(self, rank: int, total_players: int) -> None:
+        """Call between matches to condition strategy on tournament standing."""
+        self._rank = rank
+        self._total_players = total_players
+
+    def _leaderboard_block(self) -> str:
+        if self._rank is None or self._total_players is None:
+            return ""
+        pct = self._rank / self._total_players
+        if pct <= 0.25:
+            mode = "DEFENSIVE — protect lead. Prioritize +2/round. Avoid -1 exposure."
+        elif pct >= 0.75:
+            mode = "AGGRESSIVE — need large swings. Accept -1 risk to attempt +5. Target weak opponents."
+        else:
+            mode = "BALANCED — cooperate with strong players (avoid costly wars), exploit low-ranked ones."
+        return f"LEADERBOARD: Rank {self._rank}/{self._total_players} — {mode}"
+
+    def _should_debate(self, round_num: int, total_rounds: int) -> bool:
+        """Return True when a 3-agent debate adds more value than single-agent reasoning."""
+        if not self.use_debate:
+            return False
+        # Always debate the final two rounds — highest-stakes, no retaliation after
+        is_endgame = (total_rounds - round_num) <= 1
+        # Debate when uncertain AND we've seen enough rounds to have data
+        is_uncertain = self._last_confidence < 0.5 and round_num > 2
+        # Skip debate when the answer is obvious (confirmed always-defector)
+        is_obvious = (
+            self._last_hypothesis == "Always Defect" and self._last_confidence >= 0.7
+        )
+        return (is_endgame or is_uncertain) and not is_obvious
+
+    def _run_debate(self, context: str, round_num: int) -> int:
+        """
+        3-agent debate: Advocate_C vs Advocate_D → Judge.
+        Returns action int (0=cooperate, 1=defect).
+        """
+        print(f"\n[Debate R{round_num}] Running Advocate_C vs Advocate_D...")
+
+        adv_c = Agent(client=self.client, system=self._system)
+        case_c = adv_c(_ADVOCATE_C.format(context=context)) or ""
+
+        adv_d = Agent(client=self.client, system=self._system)
+        case_d = adv_d(_ADVOCATE_D.format(context=context)) or ""
+
+        c_hit = re.search(r"ADVOCATE COOPERATE:\s*(.+)$", case_c, re.IGNORECASE | re.MULTILINE)
+        d_hit = re.search(r"ADVOCATE DEFECT:\s*(.+)$", case_d, re.IGNORECASE | re.MULTILINE)
+        print(f"  [Adv-C]: {(c_hit.group(1) if c_hit else case_c[-120:]).strip()}")
+        print(f"  [Adv-D]: {(d_hit.group(1) if d_hit else case_d[-120:]).strip()}")
+
+        judge = Agent(client=self.client, system=self._system)
+        judge_resp = judge(_JUDGE.format(
+            cooperate_case=case_c[-800:],
+            defect_case=case_d[-800:],
+            context=context,
+        )) or ""
+        print(f"\n[Debate R{round_num} JUDGE]\n{judge_resp}\n")
+
+        # Also update hypothesis from judge response if present
+        if judge_resp:
+            hyp_hit = re.search(
+                r"Type hypothesis:\s*(Always Defect|Naive Cooperator|Tit-for-Tat|Grim Trigger"
+                r"|Pavlov|Strategic/Adaptive|Unknown)",
+                judge_resp, re.IGNORECASE,
+            )
+            if hyp_hit:
+                self._last_hypothesis = hyp_hit.group(1)
+            conf_hit = re.search(r"Confidence:\s*(\d+)", judge_resp)
+            if conf_hit:
+                self._last_confidence = min(float(conf_hit.group(1)), 100.0) / 100.0
+            if re.search(r"Deception.*?:\s*yes", judge_resp, re.IGNORECASE):
+                self._deception_count += 1
+
+        return _parse_action(judge_resp)
 
     def compose_message(
         self,
@@ -372,6 +501,7 @@ class TournamentAgent:
             opp_score=opp_score,
             opponent_profile=self.profile,
             deception_count=self._deception_count,
+            leaderboard_block=self._leaderboard_block(),
         )
         agent = Agent(client=self.client, system=self._system)
         response = agent(context)
@@ -408,28 +538,32 @@ class TournamentAgent:
             opponent_profile=self.profile,
             hypothesis=self._last_hypothesis,
             hypothesis_violations=self._hypothesis_violations,
+            leaderboard_block=self._leaderboard_block(),
         )
-        agent = Agent(client=self.client, system=self._system)
-        response = agent(context)
-        print(f"\n[TournamentAgent R{round_num} ACTION]\n{response}\n")
 
-        action_int = _parse_action(response or "")
+        if self._should_debate(round_num, total_rounds):
+            # High-stakes round — run 3-agent debate (Advocate_C, Advocate_D, Judge)
+            action_int = self._run_debate(context, round_num)
+        else:
+            agent = Agent(client=self.client, system=self._system)
+            response = agent(context)
+            print(f"\n[TournamentAgent R{round_num} ACTION]\n{response}\n")
+            action_int = _parse_action(response or "")
+            if response:
+                hyp_hit = re.search(
+                    r"Type hypothesis:\s*(Always Defect|Naive Cooperator|Tit-for-Tat|Grim Trigger"
+                    r"|Pavlov|Strategic/Adaptive|Unknown)",
+                    response, re.IGNORECASE,
+                )
+                if hyp_hit:
+                    self._last_hypothesis = hyp_hit.group(1)
+                conf_hit = re.search(r"Confidence:\s*(\d+)", response)
+                if conf_hit:
+                    self._last_confidence = min(float(conf_hit.group(1)), 100.0) / 100.0
+                if re.search(r"Deception.*?:\s*yes", response, re.IGNORECASE):
+                    self._deception_count += 1
+
         action_label = "cooperate" if action_int == 0 else "defect"
-
-        if response:
-            hyp_hit = re.search(
-                r"Type hypothesis:\s*(Always Defect|Naive Cooperator|Tit-for-Tat|Grim Trigger"
-                r"|Pavlov|Strategic/Adaptive|Unknown)",
-                response, re.IGNORECASE,
-            )
-            if hyp_hit:
-                self._last_hypothesis = hyp_hit.group(1)
-            conf_hit = re.search(r"Confidence:\s*(\d+)", response)
-            if conf_hit:
-                self._last_confidence = min(float(conf_hit.group(1)), 100.0) / 100.0
-            if re.search(r"Deception.*?:\s*yes", response, re.IGNORECASE):
-                self._deception_count += 1
-
         self._match_rounds.append({
             "round": round_num,
             "opp_msg": opponent_message,
@@ -465,9 +599,27 @@ class TournamentAgent:
                 violated = True
         if violated:
             self._hypothesis_violations = min(self._hypothesis_violations + 1, 2)
-        # Reset counter when agent re-classifies with high confidence (hypothesis updated)
+        # Reset counter when agent re-classifies with high confidence
         if self._hypothesis_violations >= 2 and self._last_confidence >= 0.75:
             self._hypothesis_violations = 0
+
+        # Message credibility: track when opponent's message implied cooperation but they defected
+        current = next((r for r in self._match_rounds if r["round"] == round_num), None)
+        if current:
+            opp_msg = (current.get("opp_msg") or "").lower()
+            implied_coop = any(w in opp_msg for w in (
+                "cooperat", "together", "mutual", "both", "trust", "fair", "agree", "let's"
+            ))
+            if implied_coop and opp_action == "defect":
+                self.profile.setdefault("message_lies", 0)
+                self.profile["message_lies"] = self.profile.get("message_lies", 0) + 1
+            elif not implied_coop and opp_action == "cooperate":
+                # Said nothing cooperative but cooperated — honest/strategic silence
+                pass
+            total_rounds_seen = len(self._match_rounds)
+            if total_rounds_seen > 0:
+                lies = self.profile.get("message_lies", 0)
+                self.profile["msg_lie_rate"] = round(lies / total_rounds_seen, 2)
 
     def end_match(self, my_avg_score: float, opp_avg_score: float) -> None:
         """

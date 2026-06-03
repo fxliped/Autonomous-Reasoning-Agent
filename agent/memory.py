@@ -88,6 +88,17 @@ def format_opponent_context(profile: dict) -> str:
         if last.get("notes"):
             lines.append(f"Key takeaway: {last['notes']}")
 
+    lie_rate = profile.get("msg_lie_rate")
+    if lie_rate is not None:
+        lie_pct = f"{lie_rate:.0%}"
+        if lie_rate >= 0.5:
+            credibility = f"LOW ({lie_pct} of cooperative messages were followed by defection — treat their messages as noise)"
+        elif lie_rate >= 0.25:
+            credibility = f"MIXED ({lie_pct} cooperative messages were lies — verify against actions)"
+        else:
+            credibility = f"HIGH ({lie_pct} lie rate — their cooperative messages are generally reliable)"
+        lines.append(f"Message credibility: {credibility}")
+
     if profile.get("effective_messages"):
         lines.append(
             "Messaging that worked: " + "; ".join(profile["effective_messages"][-3:])

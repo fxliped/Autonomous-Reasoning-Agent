@@ -6,11 +6,11 @@ lessons to agent/reflections/prisoners_dilemma.md. These reflections are
 automatically injected into the agent's system prompt in future matches.
 
 Run:
-    python games/self_play.py                         # 2 games per strategy (all 7)
-    python games/self_play.py --n 5                   # 5 games per strategy
-    python games/self_play.py --strategy tit_for_tat  # one strategy only
-    python games/self_play.py --no-judge              # skip LLM judging (faster)
-    python games/self_play.py --quiet                 # suppress round-by-round output
+    python tournament/train.py                         # 2 games per strategy (all 7)
+    python tournament/train.py --n 5                   # 5 games per strategy
+    python tournament/train.py --strategy tit_for_tat  # one strategy only
+    python tournament/train.py --no-judge              # skip LLM judging (faster)
+    python tournament/train.py --quiet                 # suppress round-by-round output
 """
 
 import argparse
@@ -26,7 +26,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from agent.agent import append_reflection, create_client  # noqa: E402
 from games.pd_game import PrisonersDilemma  # noqa: E402
-from games.tournament_agent import TournamentAgent  # noqa: E402
+from tournament.agent import TournamentAgent  # noqa: E402
 
 GAME_NAME = "prisoners_dilemma"
 
