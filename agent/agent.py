@@ -179,9 +179,19 @@ def build_system_prompt(
     game_prompt: str,
     game_name: str | None = None,
     use_reflections: bool = True,
+    use_react: bool = True,
 ) -> str:
-    """Combine shared ReAct instructions, game instructions, and prior reflections."""
-    sections = [BASE_REACT_PROMPT]
+    """
+    Assemble a system prompt from optional components.
+
+    use_react=True  (default): prepend BASE_REACT_PROMPT (Thought→Action→PAUSE→Observation loop).
+                               Use for game runners that dispatch tool calls between turns.
+    use_react=False:           omit BASE_REACT_PROMPT. Use for single-shot structured CoT agents
+                               (e.g. TournamentAgent) where no tool loop runs.
+    """
+    sections = []
+    if use_react:
+        sections.append(BASE_REACT_PROMPT)
     if game_name and use_reflections:
         reflections = load_reflections(game_name)
         if reflections:

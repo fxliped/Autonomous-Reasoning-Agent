@@ -27,6 +27,7 @@ if str(ROOT_DIR) not in sys.path:
 from agent.agent import append_reflection, create_client  # noqa: E402
 from games.pd_game import PrisonersDilemma  # noqa: E402
 from tournament.agent import TournamentAgent  # noqa: E402
+from tournament.rating import bradley_terry_ratings, print_ratings_table  # noqa: E402
 
 GAME_NAME = "prisoners_dilemma"
 
@@ -233,7 +234,7 @@ def run_self_play(
                     expl = item.get("explanation", "")
                     print(f"  R{item.get('round','?')} [{cat}]: {expl}")
 
-    # Summary table
+    # W/L/D summary table
     print(f"\n{'='*62}")
     print("  SELF-PLAY SUMMARY")
     print(f"{'='*62}")
@@ -246,6 +247,15 @@ def run_self_play(
         counts = Counter(r["outcome"] for r in strat_res)
         avg = sum(r["my_avg"] for r in strat_res) / len(strat_res)
         print(f"  {strat:<22}  {counts['WIN']:>3} {counts['LOSS']:>3} {counts['DRAW']:>3}  {avg:>10.3f}")
+
+    # Bradley-Terry ratings (calibrated strength with bootstrap confidence intervals)
+    if len(results) >= 2:
+        n_boot = min(1000, max(200, len(results) * 50))
+        print(f"\n{'='*62}")
+        print(f"  BRADLEY-TERRY RATINGS  (bootstrap n={n_boot})")
+        print(f"{'='*62}")
+        ratings = bradley_terry_ratings(results, n_bootstrap=n_boot)
+        print_ratings_table(ratings)
 
     if judge:
         refl_path = ROOT_DIR / "agent" / "reflections" / f"{GAME_NAME}.md"

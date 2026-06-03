@@ -94,7 +94,8 @@ class TournamentAgent:
         self.client = create_client()
         self.profile = load_opponent_profile(opponent_id)
         self._match_rounds: list[dict] = []
-        self._system = build_system_prompt(TOURNAMENT_SYSTEM_PROMPT, game_name=GAME_NAME)
+        # Tournament uses single-shot structured CoT — no ReAct tool loop runs.
+        self._system = build_system_prompt(TOURNAMENT_SYSTEM_PROMPT, game_name=GAME_NAME, use_react=False)
         self._deception_count = 0
         self._last_hypothesis = "Unknown"
         self._last_confidence = 0.0
