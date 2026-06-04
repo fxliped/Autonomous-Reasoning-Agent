@@ -1,195 +1,215 @@
-# Autonomous Reasoning Agent
+# Autonomous Reasoning Agent — Iterated Prisoner's Dilemma
 
-This project implements ReAct-style agents that play repeated games, currently:
+A strategic agent that plays iterated Prisoner's Dilemma in live tournaments on the **AltruAgent** platform. The agent reasons about opponent behavior, adapts its strategy across matches using persistent memory, and learns from post-game analysis. It was built to compete against other LLM-powered agents in a round-robin tournament format.
 
-- Prisoner's Dilemma
-- Hunger Games, a human-vs-agent allocation game
+---
 
-The agent uses a `Thought -> Action -> Observation` loop. Game runs are logged as structured Tracer-style JSON traces, and a separate offline judge can inspect a selected trace file to localize reasoning failures and append game-specific reflections.
+## How It Works
+
+Each match is 8 rounds. Every round has two phases:
+
+1. **Messaging phase** — both agents write a message simultaneously, without seeing the other's.
+2. **Moving phase** — both messages are revealed, then each agent independently chooses `cooperate` or `defect`.
+
+The payoff matrix:
+
+| My move / Their move | Cooperate | Defect |
+|---|---|---|
+| **Cooperate** | +2 / +2 | -1 / +5 |
+| **Defect** | +5 / -1 | 0 / 0 |
+
+The agent's goal is to maximize its average score per round across all matches in the tournament.
+
+---
 
 ## Architecture
 
-```text
-games/
-  React_agent_gameV1.py      Prisoner's Dilemma runner
-  hungergames_V1.py          Hunger Games runner
+```
+tournament/
+  runner.py              Live tournament loop — polls AltruAgent, plays sessions
+  train.py               Self-play training loop against scripted NPCs
+  core/
+    agent.py             TournamentAgent — two-phase decision logic, memory, profiles
+    classifier.py        Bayesian + behavioral opponent classification
+    context.py           Context builders for LLM prompts (arc phases, EV math, history)
+    prompts.py           System prompt, debate templates, response parsers
 
 agent/
-  agent.py                   Gemini client, ReAct prompt, reflection loading
-  tracing.py                 ReAct parser, trace logger, trace judge helpers
-  judge_trace.py             CLI for judging one saved trace file
-  reflections/
-    prisoners_dilemma.md     Learned lessons for Prisoner's Dilemma
-    hunger_games.md          Learned lessons for Hunger Games
+  agent.py               LLM client (OpenAI / Gemini), reflection loader, system prompt builder
+  memory.py              Opponent profile persistence (cross-match learning)
+  tracing.py             Match trace logging and offline LLM judge
+
+analytics/
+  db.py                  SQLite match database
+  strategy_review.py     Post-tournament strategy analysis — generates strategy updates
+  queries.py             Deception rate, decision trends, cooperation patterns
+  report.py              Analytics report generator
+
+games/
+  pd_game.py             Prisoner's Dilemma engine with scripted NPC strategies
+  prisoners_dilemma.py   Standalone ReAct agent game runner
+  pd_agent_vs_agent.py   Agent vs. agent self-play
+  hunger_games.py        Hunger Games (allocation game)
+  are_you_traitor.py     Social deduction multi-agent game
+
+tournament/eval/
+  benchmark.py           Tier 1 (unit) + Tier 2 (LLM oracle) pre-tournament tests
+  rating.py              Bradley-Terry rating model for self-play evaluation
+
+agent/reflections/
+  prisoners_dilemma.md   Lessons learned from judged matches
+  strategy_updates.md    Post-tournament strategy updates injected into future prompts
 
 traces/
-  *.json                     Saved game traces
+  messages_*.json        Per-match message and action logs
 ```
 
-Each game runner owns the game rules and environment. The shared `agent/` package owns the LLM wrapper, prompt construction, reflection memory, trace logging, and offline judging.
+---
 
-## Reflection Flow
+## Key Features
 
-1. A game starts.
-2. The runner calls `build_system_prompt(..., game_name="...")`.
-3. The matching reflection file is loaded from `agent/reflections/`.
-4. Any prior lessons are injected into the system prompt under `PRIOR REFLECTIONS FOR THIS GAME`.
-5. The agent plays the game while `TraceLogger` records prompts, responses, parsed thoughts/actions, observations, and game state.
-6. A JSON trace is saved under `traces/`.
-7. Later, `agent/judge_trace.py` can judge a specific trace file.
-8. The judge writes results back into the trace JSON and appends a reflection to the matching markdown file.
+### 1. Hardcoded Decision Overrides (no LLM needed)
+Some decisions are game-theoretically clear and are enforced in Python, bypassing the LLM entirely:
 
-Reflections are game-specific. Hunger Games lessons do not automatically affect Prisoner's Dilemma, and vice versa.
+| Priority | Condition | Action |
+|---|---|---|
+| 1 | Final round, opponent has been cooperating | Always **defect** |
+| 2 | R7, opponent defected late in a prior match | **Defect** to pre-empt their harvest |
+| 3 | Opponent defected last round while we cooperated | **Mirror defect** — can't be talked out of it |
+| 4 | Passive cooperator confirmed (≥3 rounds coop, no punishment signals) | **Defect** at computed round |
+| 5 | Everything else | LLM decides |
 
-## Tracer-Style Logging
+### 2. Opponent Classification
+Two complementary models updated after every round:
 
-This project adapts the Tracer idea from code error localization to reasoning error localization.
+- **Bayesian classifier** — tracks posterior probability over 7 named strategy types (Always Defect, Naive Cooperator, Tit-for-Tat, Grim Trigger, Pavlov, Generous TFT, Strategic/Adaptive)
+- **BehavioralProfile** — empirical rates: cooperation rate, retaliation rate, forgiveness rate, message credibility
 
-Instead of tracing code functions and variable states only, the project traces ReAct reasoning steps:
+These feed into EV math presented to the LLM at every decision point.
 
-```json
-{
-  "event": "react_step",
-  "round": 1,
-  "step": 1,
-  "prompt": "...",
-  "response": "...",
-  "parsed": {
-    "thought": "...",
-    "action": "make_move",
-    "argument": "defect",
-    "has_pause": true,
-    "decision": null,
-    "parse_error": null
-  },
-  "observation": "...",
-  "state_before": {},
-  "state_after": {}
-}
-```
+### 3. Adaptive Extraction Timing
+The agent computes which round to start extracting from a passive cooperator based on:
+- **Prior match history** with this specific opponent (did they punish last time, and at what round?)
+- **Leaderboard pressure** (bottom 40% and behind → extract earlier; top 30% → play safer)
+- **Observed forgiveness rate** this match (high forgiveness → extract earlier; can recover)
 
-This lets us localize failures such as:
+First match: defaults to R6 (conservative). Subsequent matches: tightens toward R4 based on evidence.
 
-- malformed ReAct output
-- invalid moves
-- misunderstood state
-- weak opponent modeling
-- poor strategy
-- goal mismatch
-- skipped or hallucinated tool calls
+### 4. Persistent Cross-Match Memory
+Every opponent has a profile stored in `agent/memory/` that persists across tournaments:
+- Strategy classification and confidence
+- Full match history (round-by-round actions, messages, points)
+- Effective and failed message framings
+- Message lie rate (their deception rate toward us, and ours toward them)
+
+### 5. Messaging as a Manipulation Layer
+The agent's messages are composed separately from its action decision. The system prompt instructs the agent to use messages to shape what the opponent believes — not to commit to any action. The LLM is given a full `[OPPONENT MESSAGE ANALYSIS]` section that asks it to assess message credibility against observed action history before trusting anything the opponent says.
+
+### 6. Reflection + Strategy Update Loop
+After each match, an LLM judge reviews the round-by-round trace and appends a lesson to `agent/reflections/prisoners_dilemma.md`. Running `analytics/strategy_review.py` reviews all stored match data and writes a higher-level strategy update to `agent/reflections/strategy_updates.md`. Both files are injected into the system prompt for every future match.
+
+---
 
 ## Setup
 
-Create a `.env` file with your Gemini API key:
-
-```text
-GEMINI_API_KEY=your_key_here
-```
-
-The existing code also supports the older project variable name:
-
-```text
-gemeni_api_key=your_key_here
-```
-
-Install dependencies in your virtual environment:
+### 1. Install dependencies
 
 ```bash
-python -m pip install google-genai python-dotenv
+pip install -r requirements.txt
 ```
 
-If your shell has multiple Python environments active, use the project venv explicitly:
+### 2. Configure API keys in `.env`
+
+```
+OPENAI_API_KEY=sk-...           # preferred
+GEMINI_API_KEY=...              # fallback
+ALTRUAGENT_API_KEY=sk_agent_... # required for live tournament
+```
+
+The agent uses OpenAI if `OPENAI_API_KEY` is set, otherwise falls back to Gemini automatically.
+
+---
+
+## Running a Tournament
+
+### Enter a specific tournament
 
 ```bash
-../.venv/Scripts/python.exe -m pip install google-genai python-dotenv
+python tournament/runner.py --tournament <TOURNAMENT_ID> --verbose 2>&1 | tee game_log.txt
 ```
 
-## Run Games
+`--verbose` prints the LLM's full reasoning for each round. Omit it for compact output. `tee game_log.txt` saves the full log to a file while also showing it in the terminal.
 
-From the repo root:
+### What you see per round
+
+```
+[R3] Sending : "We've cooperated two rounds — this is working. Let's hold it."
+[R3] Composed in 2.8s
+[R3] Received: "I mirror your play. Cooperate and so will I."
+[R3] → COOPERATE | Tit-for-Tat (71%)
+[R3] Submitting: Cooperate
+[R3] Result: I Cooperate | They Cooperate | pts me +2 them +2
+[Bayes R3] Tit-for-Tat (78%)
+```
+
+### Join a queue (auto-match)
 
 ```bash
-python games/React_agent_gameV1.py
+python tournament/runner.py --queue <QUEUE_ID> --verbose
 ```
+
+---
+
+## Pre-Tournament Checklist
+
+Run these in order before entering a tournament:
 
 ```bash
-python games/hungergames_V1.py
+# 1. Fast unit tests (no LLM, ~5 seconds)
+python tournament/eval/benchmark.py
+
+# 2. LLM oracle efficiency tests (~2 minutes)
+python tournament/eval/benchmark.py --eval --scenarios
+
+# 3. Self-play training against scripted NPCs (optional — writes reflections)
+python tournament/train.py --n 2
+
+# 4. Strategy review — analyzes stored match data, writes strategy update
+python analytics/strategy_review.py
+
+# 5. Enter tournament
+python tournament/runner.py --tournament <ID> --verbose 2>&1 | tee game_log.txt
 ```
 
-After each game, a trace file is saved under `traces/`, for example:
+---
 
-```text
-traces/prisoners_dilemma_20260429_132414_bf743097.json
-```
+## Local Testing
 
-Gameplay does not run the judge automatically. It only creates the trace.
-
-## Judge A Trace
-
-Run the judge on a specific trace file:
+Test the agent against a scripted NPC without needing the platform:
 
 ```bash
-python agent/judge_trace.py traces/prisoners_dilemma_20260429_132414_bf743097.json
+# vs. tit-for-tat (default)
+python tournament/core/agent.py
+
+# vs. a specific strategy
+python tournament/core/agent.py --strategy always_cooperate
+python tournament/core/agent.py --strategy grim_trigger
+python tournament/core/agent.py --strategy random
 ```
 
-Equivalent module form:
+Available NPC strategies: `tit_for_tat`, `grim_trigger`, `pavlov`, `generous_tft`, `always_defect`, `always_cooperate`, `random`
 
-```bash
-python -m agent.judge_trace traces/prisoners_dilemma_20260429_132414_bf743097.json
-```
+---
 
-If your dependencies are installed in the parent `.venv`, use:
+## Score Reference
 
-```bash
-../.venv/Scripts/python.exe agent/judge_trace.py traces/prisoners_dilemma_20260429_132414_bf743097.json
-```
+For an 8-round match:
 
-By default, judging:
+| Outcome | Score | Avg/round |
+|---|---|---|
+| Full mutual cooperation | 16 pts | 2.00 |
+| Cooperate R1–7, defect R8 | 19 pts | 2.38 |
+| Arms race from R3 onward | ~4 pts | ~0.50 |
+| Mutual defection all 8 rounds | 0 pts | 0.00 |
 
-- reads the selected trace file
-- asks Gemini to localize reasoning failures
-- writes the judge result into the trace JSON under `"judge"`
-- appends the judge's reflection to `agent/reflections/<game_name>.md`
-
-Useful options:
-
-```bash
-python agent/judge_trace.py traces/example.json --no-reflection
-```
-
-Judges the trace but does not update reflection memory.
-
-```bash
-python agent/judge_trace.py traces/example.json --no-write
-```
-
-Prints the judge result but does not modify the trace file.
-
-## Demo Script
-
-1. Run Prisoner's Dilemma:
-
-```bash
-python games/React_agent_gameV1.py
-```
-
-2. Open the generated JSON in `traces/` and show the step-by-step ReAct trace.
-
-3. Judge that exact trace:
-
-```bash
-python agent/judge_trace.py traces/<trace_file>.json
-```
-
-4. Reopen the trace and show the `"judge"` section.
-
-5. Open `agent/reflections/prisoners_dilemma.md` and show the new reflection headed by the source trace filename.
-
-6. Run the game again and point out that the reflection is loaded into the prompt before the agent plays.
-
-## Notes
-
-- No second API key is needed for judging. The same Gemini key is used for gameplay and trace judging.
-- Traces are JSON because they are meant for structured analysis.
-- Reflections are Markdown because they are human-readable and easy to present.
-- The judge is intentionally offline so game execution and trace evaluation stay separate.
+The agent targets 2.38+ per match through a combination of building trust early, extracting optimally late, and adapting timing based on opponent history.

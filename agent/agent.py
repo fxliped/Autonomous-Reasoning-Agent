@@ -72,7 +72,8 @@ class LLMClient:
     def _build_client(self):
         if self.provider == "openai":
             from openai import OpenAI
-            self._openai = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+            # 15s hard timeout — fast-fail so the platform's 30s round limit isn't blown
+            self._openai = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), timeout=15.0)
         elif self.provider == "gemini":
             from google import genai
             key = os.getenv("gemeni_api_key") or os.getenv("GEMINI_API_KEY")
@@ -92,8 +93,13 @@ class LLMClient:
                     return self._complete_gemini(system, messages, model)
             except Exception as exc:
                 if attempt < 2:
-                    print(f"  [API error, retrying in 5s... ({attempt + 1}/3): {exc}]")
-                    time.sleep(5)
+                    exc_str = str(exc)
+                    # Rate limit: parse suggested wait time; else 1s
+                    import re as _re
+                    m = _re.search(r"try again in (\d+)ms", exc_str, _re.IGNORECASE)
+                    wait = (int(m.group(1)) / 1000 + 0.1) if m else 1.0
+                    print(f"  [API error, retrying in {wait:.1f}s ({attempt + 1}/3): {exc_str[:80]}]")
+                    time.sleep(wait)
                 else:
                     raise
 

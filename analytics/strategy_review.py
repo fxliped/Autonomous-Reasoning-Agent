@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -31,6 +32,7 @@ from analytics.queries import (  # noqa: E402
     top_opponents,
 )
 from tournament.core.prompts import TOURNAMENT_SYSTEM_PROMPT  # noqa: E402
+from tournament.eval.benchmark import run_fast_benchmarks  # noqa: E402
 
 GAME_NAME = "prisoners_dilemma"
 UPDATE_FILE = REFLECTIONS_DIR / "strategy_updates.md"
@@ -172,11 +174,7 @@ def run_strategy_review(
         print("[StrategyReview] Dry run — not writing to disk.")
         return summary
 
-    # ── Pre-deployment validation gate ──────────────────────────────────────────
-    # Run Tier 1 fast benchmarks before applying any strategy update.
-    # A failing Tier 1 means the update would be applied to a broken baseline.
     print("\n[StrategyReview] Running Tier 1 benchmarks before applying update...")
-    from tournament.eval.benchmark import run_fast_benchmarks  # noqa: PLC0415
     tier1_failures = run_fast_benchmarks()
     if tier1_failures > 0:
         print(
@@ -190,8 +188,7 @@ def run_strategy_review(
 
     # Write to strategy_updates.md
     REFLECTIONS_DIR.mkdir(parents=True, exist_ok=True)
-    from datetime import datetime  # noqa: PLC0415
-    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     existing = UPDATE_FILE.read_text(encoding="utf-8") if UPDATE_FILE.exists() else ""
     separator = "\n\n" if existing.strip() else ""
     with UPDATE_FILE.open("a", encoding="utf-8") as f:

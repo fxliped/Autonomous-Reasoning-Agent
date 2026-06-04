@@ -36,7 +36,7 @@ from typing import Generator
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT_DIR / "data" / "agent.db"
 
-_COOP_WORDS = ("cooperat", "together", "mutual", "both", "trust", "fair", "agree", "let's")
+COOP_WORDS = ("cooperat", "together", "mutual", "both", "trust", "fair", "agree", "let's")
 
 _PAYOFFS: dict[tuple[str, str], int] = {
     ("cooperate", "cooperate"): 2,
@@ -187,7 +187,7 @@ def get_conn() -> Generator[sqlite3.Connection, None, None]:
 # ─── HELPERS ──────────────────────────────────────────────────────────────────
 
 def _msg_intent(text: str) -> str:
-    return "cooperative" if any(w in (text or "").lower() for w in _COOP_WORDS) else "neutral"
+    return "cooperative" if any(w in (text or "").lower() for w in COOP_WORDS) else "neutral"
 
 
 def _insert_round_and_deception(

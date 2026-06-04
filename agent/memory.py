@@ -1,14 +1,11 @@
 """
-Persistent opponent memory — SQLite-backed via analytics.db.
+Opponent memory helpers — format and LLM-based post-match analysis.
 
-  load_opponent_profile(opponent_id)        → dict
-  save_opponent_profile(profile)
-  log_tournament_result(result)
-  format_opponent_context(profile)          → str
-  update_profile_after_match(...)           → dict
+  format_opponent_context(profile)   → str  (context block for system prompts)
+  update_profile_after_match(...)    → dict (LLM classification + lesson extraction)
 
-Storage: data/agent.db (shared with the analytics layer).
-Legacy JSON files in agent/memory/opponents/ are migrated automatically on first load.
+Storage is handled by analytics.db. Callers that need load/save/log should import
+directly from analytics.db: load_opponent, save_opponent, log_match.
 """
 
 from __future__ import annotations
@@ -22,25 +19,8 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from analytics.db import load_opponent, save_opponent, log_match  # noqa: E402
-
 
 # ─── PUBLIC API ───────────────────────────────────────────────────────────────
-
-def load_opponent_profile(opponent_id: str) -> dict:
-    """Load opponent profile from DB (migrates legacy JSON on first access)."""
-    return load_opponent(opponent_id)
-
-
-def save_opponent_profile(profile: dict) -> None:
-    """Persist opponent profile to DB."""
-    save_opponent(profile)
-
-
-def log_tournament_result(result: dict) -> None:
-    """Append a match result to the global history."""
-    log_match(result)
-
 
 def format_opponent_context(profile: dict) -> str:
     """Format opponent profile as a text block for system prompt injection."""
@@ -81,7 +61,25 @@ def format_opponent_context(profile: dict) -> str:
             credibility = f"MIXED ({lie_pct} cooperative messages were lies — verify against actions)"
         else:
             credibility = f"HIGH ({lie_pct} lie rate — their cooperative messages are generally reliable)"
-        lines.append(f"Message credibility: {credibility}")
+        lines.append(f"Their message credibility: {credibility}")
+
+    my_lie_rate = profile.get("my_lie_rate_to_opp")
+    if my_lie_rate is not None:
+        if my_lie_rate >= 0.4:
+            lines.append(
+                f"YOUR credibility to them: LOW ({my_lie_rate:.0%} of your cooperative messages were lies). "
+                "They likely discount your cooperative framing — Apology-Recovery before any extraction."
+            )
+        elif my_lie_rate >= 0.15:
+            lines.append(
+                f"YOUR credibility to them: MODERATE ({my_lie_rate:.0%} lie rate). "
+                "Selective deception still possible but varied messaging is critical."
+            )
+        else:
+            lines.append(
+                f"YOUR credibility to them: HIGH ({my_lie_rate:.0%} lie rate). "
+                "Your cooperative messages carry weight — use this window strategically."
+            )
 
     if profile.get("effective_messages"):
         lines.append(

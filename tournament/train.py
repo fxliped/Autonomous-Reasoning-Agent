@@ -74,7 +74,7 @@ _NPC_MESSAGES = {
 
 def run_self_play_match(
     strategy: str,
-    rounds: int = 10,
+    rounds: int = 8,
     verbose: bool = True,
 ) -> tuple[list[dict], float, float]:
     """
@@ -82,7 +82,7 @@ def run_self_play_match(
     Returns (match_rounds, my_avg_score, opp_avg_score).
     match_rounds is captured before end_match() clears internal state.
     """
-    agent = TournamentAgent(opponent_id=f"npc_{strategy}", total_rounds=rounds)
+    agent = TournamentAgent(opponent_id=f"npc_{strategy}", total_rounds=rounds, use_debate=False)
     game = PrisonersDilemma(rounds=rounds, opponent_strategy=strategy)
     match_history: list[dict] = []
     npc_msg = _NPC_MESSAGES.get(strategy, "Let's play.")

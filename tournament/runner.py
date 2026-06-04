@@ -20,6 +20,10 @@ import time
 import os
 from pathlib import Path
 
+# Force line-buffered stdout so prints appear immediately even when piped to tee.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(line_buffering=True)
+
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
@@ -37,7 +41,7 @@ GAME_SERVER_FALLBACK = "http://GameAp-Servi-tOMiXPVqPFIe-185462629.us-west-2.elb
 ACTION_COOPERATE = 0
 ACTION_DEFECT = 1
 
-POLL_INTERVAL = 5       # seconds between state polls
+POLL_INTERVAL = 2       # seconds between state polls
 MAX_EMPTY_WAIT = 300    # seconds before auto-resign if legal_actions stays empty
 
 
@@ -101,6 +105,10 @@ class AltruAgentClient:
 
     # --- tournaments ---
 
+    def join_tournament(self, tournament_id: str) -> dict:
+        """Explicitly join a tournament by ID. Required when entering via admin share."""
+        return self._post(f"/tournaments/{tournament_id}/join", {})
+
     def poll_tournament(self, tournament_id: str) -> dict:
         return self._get(f"/tournaments/{tournament_id}")
 
@@ -117,10 +125,14 @@ class AltruAgentClient:
         )
 
     def send_message(self, session_id: str, content: str,
-                     game_server: str | None = None) -> dict:
+                     game_server: str | None = None,
+                     recipients: list[int] | None = None) -> dict:
+        # recipients defaults to [1] (opponent in 2-player game per API docs).
+        # Pass recipients=[0] if the state reveals we are player index 1.
         return self._post(
             f"/games/{session_id}/message",
-            {"recipients": [], "content": content, "type": "chat"},
+            {"recipients": recipients if recipients is not None else [1],
+             "content": content, "type": "chat"},
             base=game_server or self.game_server,
         )
 
@@ -243,6 +255,8 @@ def play_session(
     msg_log: dict[int, str] = {}      # round_num → opponent message (filled in MOVING phase)
     my_msg_log: dict[int, str] = {}   # round_num → agent's own message (filled in MESSAGING phase)
     empty_wait_start: float | None = None
+    opp_recipient_index: int = 1      # opponent player index for send_message; resolved on first state
+    _moving_phase_start: float | None = None  # when we first detected the moving phase for this round
 
     while True:
         state = client.get_game_state(session_id, game_server)
@@ -264,13 +278,18 @@ def play_session(
         phase = state.get("phase", "moving")
         next_action = ((state.get("next_actions") or [{}])[0]).get("action", "")
         current_round = state.get("current_round", 1)
-        total_rounds = state.get("total_rounds", 10)
+        total_rounds = state.get("total_rounds", 8)
 
-        # Resolve our player name once
+        # Resolve our player name and opponent recipient index once
         if not my_name and state.get("current_player"):
             my_name = _my_name(state)
         if not opp_name and my_name:
             opp_name = _opponent_name(state, my_name)
+            # Determine opponent's player index for targeted messaging
+            players = state.get("players") or []
+            if my_name in players:
+                my_idx = players.index(my_name)
+                opp_recipient_index = 1 - my_idx  # 0→1 or 1→0
 
         # --- WAIT ---
         if next_action == "wait_for_opponent":
@@ -298,15 +317,24 @@ def play_session(
 
             # Compose our message (blind — don't see opponent's yet)
             if next_action != "terminate_messaging":
-                message_sent_this_round = agent.compose_message(
-                    round_num=current_round,
-                    total_rounds=total_rounds,
-                    match_history=match_history,
-                    my_score=my_score,
-                    opp_score=opp_score,
-                )
+                _msg_start = time.monotonic()
+                try:
+                    message_sent_this_round = agent.compose_message(
+                        round_num=current_round,
+                        total_rounds=total_rounds,
+                        match_history=match_history,
+                        my_score=my_score,
+                        opp_score=opp_score,
+                    )
+                except Exception as e:
+                    print(f"[Messaging] compose_message failed ({e}) — using fallback")
+                    message_sent_this_round = (
+                        "I cooperate with partners who cooperate. Mutual +2/round beats the gamble."
+                    )
+                print(f"[R{current_round}] Composed in {time.monotonic()-_msg_start:.1f}s")
                 my_msg_log[current_round] = message_sent_this_round
-                resp = client.send_message(session_id, message_sent_this_round, game_server)
+                resp = client.send_message(session_id, message_sent_this_round, game_server,
+                                           recipients=[opp_recipient_index])
                 err = resp.get("error")
                 if err == "messages_quota_exceeded":
                     print(f"[Messaging] Quota exceeded — terminating directly.")
@@ -315,12 +343,15 @@ def play_session(
 
             # Terminate to advance to MOVING phase
             client.terminate_messaging(session_id, game_server)
-            print(f"[R{current_round}] Messaging terminated. Our msg: {message_sent_this_round!r}")
             time.sleep(2)
             continue
 
         # --- MOVING PHASE ---
         if phase == "moving" or next_action == "make_move":
+            # Track when we first entered this phase so the agent's time budget is accurate.
+            if _moving_phase_start is None:
+                _moving_phase_start = time.monotonic()
+
             legal = state.get("legal_actions") or []
             if not legal:
                 # Waiting for opponent to finish messaging or move
@@ -346,6 +377,11 @@ def play_session(
                 if entry["round"] in my_msg_log:
                     entry["my_msg"] = my_msg_log[entry["round"]]
 
+            # Subtract time already spent in this phase so the agent doesn't exceed the
+            # platform's 30s per-round limit (25s budget minus polling overhead).
+            elapsed_in_phase = time.monotonic() - _moving_phase_start
+            time_budget = max(8.0, 25.0 - elapsed_in_phase)
+
             action_int = agent.choose_action(
                 round_num=current_round,
                 total_rounds=total_rounds,
@@ -354,6 +390,7 @@ def play_session(
                 match_history=match_history,
                 my_score=my_score,
                 opp_score=opp_score,
+                time_budget_seconds=time_budget,
             )
 
             # Validate action is in legal_actions
@@ -361,16 +398,20 @@ def play_session(
                 action_int = legal[0]
 
             action_label = "Cooperate" if action_int == 0 else "Defect"
-            print(f"[R{current_round}] Submitting action: {action_label} ({action_int}). Opp msg: {opp_message!r}")
+            print(f"[R{current_round}] Submitting: {action_label}")
 
             client.step(session_id, action_int, game_server)
+            _moving_phase_start = None  # reset for next round
 
-            # Wait for round to complete so last_round appears
-            time.sleep(POLL_INTERVAL)
+            # Retry reading round result — server may lag up to ~8s after step.
+            last_rnd = {}
+            for _ in range(4):
+                time.sleep(POLL_INTERVAL)
+                new_state = client.get_game_state(session_id, game_server)
+                last_rnd = new_state.get("last_round") or {}
+                if last_rnd.get("round") == current_round:
+                    break
 
-            # Read completed round result
-            new_state = client.get_game_state(session_id, game_server)
-            last_rnd = new_state.get("last_round") or {}
             if last_rnd.get("round") == current_round:
                 actions = last_rnd.get("action_labels") or {}
                 payoffs = last_rnd.get("payoffs") or {}
@@ -380,6 +421,8 @@ def play_session(
                 opp_pts = float(payoffs.get(opp_name_local, 0.0))
                 agent.record_round_result(current_round, opp_action_label, my_pts, opp_pts)
                 print(f"[R{current_round}] Result: I {action_label} | They {opp_action_label} | pts me {my_pts:+.0f} them {opp_pts:+.0f}")
+            else:
+                print(f"[R{current_round}] Warning: round result not available after retries — classification update skipped.")
             continue
 
         # Unknown state — poll
@@ -390,7 +433,7 @@ def play_session(
 # TOURNAMENT LOOP
 # =============================================================================
 
-def run_tournament(client: AltruAgentClient, tournament_id: str) -> None:
+def run_tournament(client: AltruAgentClient, tournament_id: str, verbose: bool = False) -> None:
     """Poll a tournament and play each child session as it becomes available."""
     print(f"\n[Tournament] Watching {tournament_id}")
 
@@ -431,7 +474,8 @@ def run_tournament(client: AltruAgentClient, tournament_id: str) -> None:
                 opp_entry = next((p for p in roster if p.get("agent_id") != my_agent_id), {})
                 opp_id = opp_entry.get("name") or opp_entry.get("agent_id") or "unknown"
 
-                agent = TournamentAgent(opponent_id=opp_id)
+                # Disable debate in live games — 3 LLM calls can't fit in a 30s round budget.
+                agent = TournamentAgent(opponent_id=opp_id, verbose=verbose, use_debate=False)
 
                 # Inject leaderboard position + end-game targeting data
                 lb = t.get("leaderboard") or []
@@ -465,7 +509,7 @@ def run_tournament(client: AltruAgentClient, tournament_id: str) -> None:
                             matches_remaining=matches_remaining,
                         )
 
-                play_session(client, session_id, agent, game_server)
+                play_session(client, session_id, agent, game_server)  # verbose is in agent
 
         elif action_code == "wait_for_child_match":
             pass  # normal — no active match yet
@@ -477,7 +521,7 @@ def run_tournament(client: AltruAgentClient, tournament_id: str) -> None:
 # QUEUE LOOP
 # =============================================================================
 
-def run_queue_loop(client: AltruAgentClient, queue_id: str) -> None:
+def run_queue_loop(client: AltruAgentClient, queue_id: str, verbose: bool = False) -> None:
     """Join a queue, wait for the tournament instance, play it, then rejoin."""
     print(f"\n[Queue] Joining queue {queue_id}")
 
@@ -496,7 +540,7 @@ def run_queue_loop(client: AltruAgentClient, queue_id: str) -> None:
             print(f"[Queue] Waiting... ~{secs}s until start.")
             time.sleep(POLL_INTERVAL)
 
-        run_tournament(client, tournament_id)
+        run_tournament(client, tournament_id, verbose=verbose)
 
         print("[Queue] Tournament done. Rejoining queue in 10s...")
         time.sleep(10)
@@ -546,6 +590,8 @@ if __name__ == "__main__":
                         help="Join a specific queue by ID (default: auto-detect)")
     parser.add_argument("--opponent", metavar="NAME", default="unknown",
                         help="Opponent name for memory (used with --session)")
+    parser.add_argument("--verbose", action="store_true",
+                        help="Print full LLM reasoning, debate output, and Bayes breakdown")
     args = parser.parse_args()
 
     if args.signup:
@@ -564,11 +610,13 @@ if __name__ == "__main__":
         sys.exit(1)
 
     if args.session:
-        agent = TournamentAgent(opponent_id=args.opponent)
+        agent = TournamentAgent(opponent_id=args.opponent, verbose=args.verbose)
         play_session(client, args.session, agent, GAME_SERVER_FALLBACK)
 
     elif args.tournament:
-        run_tournament(client, args.tournament)
+        # Explicitly join before polling (required when entering via admin-shared tournament ID)
+        client.join_tournament(args.tournament)
+        run_tournament(client, args.tournament, verbose=args.verbose)
 
     else:
         # Auto-detect queue
@@ -583,4 +631,4 @@ if __name__ == "__main__":
             queue_id = pd_queues[0]["queue_id"]
             print(f"[Queue] Auto-selected queue: {queue_id} ({pd_queues[0].get('name','')})")
 
-        run_queue_loop(client, queue_id)
+        run_queue_loop(client, queue_id, verbose=args.verbose)

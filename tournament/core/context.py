@@ -61,23 +61,24 @@ def arc_phase(round_num: int, total_rounds: int) -> tuple[str, str]:
     if round_num == total_rounds - 1:
         return (
             "PRE-HARVEST",
-            f"Round {round_num} — Pre-Harvest ({rounds_left} rounds left including this): "
-            "Low-forgiveness opponent (Grim-like): defect NOW — 2 rounds of retaliation is cheap. "
-            "High-forgiveness / Naive Cooperator: cooperate this round, defect final. "
-            "Your message should reinforce cooperation to prime their final-round action.",
+            f"Round {round_num} — Pre-Harvest (2 rounds left including this): "
+            "Low-forgiveness (Grim/Always-Defect): defect NOW — only 1 round of retaliation remains. "
+            "High-forgiveness / Naive Cooperator / TFT: cooperate this round, defect final round. "
+            "Message warmly ('one more together') to prime their final-round cooperation.",
         )
-    if total_rounds - round_num <= max(1, round(total_rounds * 0.3)):
+    if total_rounds - round_num <= max(1, round(total_rounds * 0.375)):
         return (
             "BUILD",
             f"Round {round_num} — Build ({rounds_left} rounds left): "
-            "Entering the harvest window. Reinforce cooperative narrative in your message. "
-            "Stay cooperative to prime the late defection — but mirror defect immediately if they defect.",
+            "Establish/reinforce cooperative narrative. Stay cooperative to prime late defection — "
+            "but mirror defect immediately if they defect. Final betrayal is 1-2 rounds away.",
         )
     return (
         "EXECUTE",
         f"Round {round_num} — Execute ({rounds_left} rounds left): "
-        "Maintain your classified strategy. Mirror defection immediately — "
-        "don't let a single unreciprocated cooperation become a pattern.",
+        "COOPERATE unless opponent is a CONFIRMED Always Defector (defected R1 AND R2). "
+        "Mid-game defection against TFT/Grim/Strategic triggers an arms race worth ~4 pts total — "
+        "the cost of being wrong far exceeds the benefit. Mirror ONE defection, then offer reset.",
     )
 
 
@@ -227,6 +228,100 @@ def _self_pattern_block() -> str:
         return ""
 
 
+def _tactic_recommendation(
+    hypothesis: str,
+    arc_name: str,
+    forgive_rate: float,
+    my_lie_rate_to_opp: float,
+    matches_played: int,
+) -> str:
+    """
+    Recommend a specific named tactic from the DECEPTION PLAYBOOK for the current state.
+    Connects opponent type + arc phase + forgiveness + own credibility into one actionable line.
+    """
+    h = hypothesis
+
+    if h == "Always Defect":
+        return (
+            "RECOMMENDED TACTIC: None — opponent defects regardless of your message. "
+            "Save the message token budget; defect immediately every round."
+        )
+
+    if h == "Grim Trigger":
+        if arc_name in ("PRE-HARVEST", "FINAL"):
+            return (
+                "RECOMMENDED TACTIC: False Commitment — single-round extraction only. "
+                "Message cooperation, defect once. Grim retaliation is already priced in."
+            )
+        return (
+            "RECOMMENDED TACTIC: NO deception — Grim Trigger punishes any defection permanently. "
+            "Cooperate every round until PRE-HARVEST. Credible Threat messaging only."
+        )
+
+    if h == "Naive Cooperator":
+        if arc_name == "FINAL":
+            return (
+                "RECOMMENDED TACTIC: False Commitment — message cooperation, defect. "
+                "No retaliation possible. Maximum extraction."
+            )
+        if arc_name in ("PRE-HARVEST", "BUILD"):
+            return (
+                "RECOMMENDED TACTIC: Late Betrayal — cooperate this round, "
+                "message 'almost done — let's finish strong', defect final round."
+            )
+        return (
+            "RECOMMENDED TACTIC: Gradual Trust — cooperate fully through BUILD phase. "
+            "Message warm, logical cooperation. Harvest final 1-2 rounds."
+        )
+
+    if h == "Tit-for-Tat":
+        if arc_name == "FINAL":
+            return (
+                "RECOMMENDED TACTIC: False Commitment — TFT cannot retaliate after the final round. "
+                "Message cooperation, defect. Clean +5."
+            )
+        if arc_name in ("PROBE", "CLASSIFY"):
+            return (
+                "RECOMMENDED TACTIC: TFT Bluff — claim you mirror their play. "
+                "Cooperate to lock C/C equilibrium. Harvest final round only."
+            )
+        return (
+            "RECOMMENDED TACTIC: Gradual Trust → Final Betrayal. "
+            "Cooperate until round N-1, then defect. TFT has no future rounds to punish."
+        )
+
+    if h == "Pavlov":
+        return (
+            "RECOMMENDED TACTIC: Controlled Leak + Pavlov Exploit — "
+            "name their pattern ('You adjust based on last round's outcome'). "
+            "Pavlov cooperates after C/C. Cooperate when they just cooperated → they cooperate again → defect → repeat for +5 cycles."
+        )
+
+    # Generous TFT, Strategic/Adaptive, Unknown
+    if my_lie_rate_to_opp >= 0.3 and matches_played > 0:
+        return (
+            f"RECOMMENDED TACTIC: Apology-Recovery — your lie rate with this opponent is "
+            f"{my_lie_rate_to_opp:.0%}. Your cooperative messages have low credibility. "
+            "Send an explicit reset ('last match I played aggressively — let's cooperate cleanly'). "
+            "Buy 2-3 genuine cooperation rounds, then harvest final round."
+        )
+    if arc_name in ("PRE-HARVEST", "FINAL"):
+        forgiveness_label = "high" if forgive_rate >= 0.5 else "low"
+        if forgive_rate >= 0.5:
+            return (
+                "RECOMMENDED TACTIC: Late Betrayal — forgiveness is high, retaliation will be short. "
+                "Cooperate this round, defect next. They'll likely forgive and re-cooperate if needed."
+            )
+        return (
+            "RECOMMENDED TACTIC: Final Defection only — low forgiveness means retaliation is costly. "
+            "Reserve betrayal for the absolute final round only."
+        )
+    return (
+        "RECOMMENDED TACTIC: Gradual Trust — build cooperative narrative through messages. "
+        "Vary message framing each round to avoid being read as a pattern. Harvest final 2 rounds."
+    )
+
+
 def _grudge_warning(profile: dict) -> str:
     """Warning injected when we've previously defected against this opponent."""
     if profile.get("matches_played", 0) == 0:
@@ -266,6 +361,7 @@ def build_message_context(
     deception_count: int = 0,
     leaderboard_block: str = "",
     behavioral: BehavioralProfile | None = None,
+    hypothesis: str = "Unknown",
 ) -> str:
     """Context for MESSAGING PHASE — opponent's current message not yet visible."""
     rounds_left = total_rounds - round_num + 1
@@ -280,6 +376,13 @@ def build_message_context(
     behavioral_line = (
         f"\nBEHAVIORAL SIGNALS: {behavioral.summary()}"
         if behavioral and behavioral.rounds_seen > 0 else ""
+    )
+    tactic = _tactic_recommendation(
+        hypothesis=hypothesis,
+        arc_name=arc_name,
+        forgive_rate=behavioral.forgive_rate if behavioral else 0.5,
+        my_lie_rate_to_opp=float(opponent_profile.get("my_lie_rate_to_opp") or 0.0),
+        matches_played=int(opponent_profile.get("matches_played") or 0),
     )
     return f"""
 MESSAGING PHASE — Round {round_num}/{total_rounds} [{arc_name}] | {rounds_left} round(s) left
@@ -302,6 +405,7 @@ Confidence: <%>
 Evidence: <cite specific rounds or patterns>
 
 [MESSAGE STRATEGY]
+{tactic}
 Goal: <what I want them to believe or do>
 Approach: <cooperative signal | credible threat | deception | sympathy | neutral>
 

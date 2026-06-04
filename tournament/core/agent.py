@@ -22,8 +22,9 @@ Test locally:
 
 import re
 import sys
+import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -31,13 +32,15 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from agent.agent import Agent, build_system_prompt, create_client  # noqa: E402
-from agent.memory import (  # noqa: E402
-    load_opponent_profile,
-    save_opponent_profile,
-    log_tournament_result,
-    update_profile_after_match,
+from agent.memory import update_profile_after_match  # noqa: E402
+from agent.tracing import judge_match_rounds  # noqa: E402
+from analytics.db import (  # noqa: E402
+    COOP_WORDS,
+    ingest_match_rounds,
+    load_opponent,
+    save_opponent,
+    log_match,
 )
-from analytics.db import ingest_match_rounds  # noqa: E402
 from games.pd_game import PrisonersDilemma  # noqa: E402
 from .classifier import (  # noqa: E402
     BehavioralProfile,
@@ -56,6 +59,11 @@ from .prompts import (  # noqa: E402
 )
 
 GAME_NAME = "prisoners_dilemma"
+
+_PUNISHMENT_SIGNALS = re.compile(
+    r'\b(mirror|punish|retaliat|defect if|eye for|tit.for|in.kind|respond in|same as you|copy your|copy me|i will defect)',
+    re.IGNORECASE,
+)
 
 
 # =============================================================================
@@ -88,14 +96,16 @@ class TournamentAgent:
     def __init__(
         self,
         opponent_id: str = "unknown",
-        total_rounds: int = 10,
-        use_debate: bool = True,
+        total_rounds: int = 8,
+        use_debate: bool = False,
+        verbose: bool = False,
     ):
         self.opponent_id = opponent_id
         self.total_rounds = total_rounds
         self.use_debate = use_debate
+        self.verbose = verbose
         self.client = create_client()
-        self.profile = load_opponent_profile(opponent_id)
+        self.profile = load_opponent(opponent_id)
         self._match_rounds: list[dict] = []
         # Tournament uses single-shot structured CoT — no ReAct tool loop runs.
         self._system = build_system_prompt(TOURNAMENT_SYSTEM_PROMPT, game_name=GAME_NAME, use_react=False)
@@ -110,7 +120,7 @@ class TournamentAgent:
         self._matches_remaining: int | None = None
         self._type_posterior: dict[str, float] = dict(_UNIFORM_PRIOR)
         self._behavioral = BehavioralProfile()
-        self._run_id = f"{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+        self._run_id = f"{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
         self._debate_count = 0  # debates used this match (capped at 2 to control LLM cost)
         self._self_pattern = _self_pattern_block()  # cached once per match; queries analytics DB
 
@@ -196,18 +206,27 @@ class TournamentAgent:
 
     def _run_debate(self, context: str, round_num: int) -> int:
         """3-agent debate: Advocate_C vs Advocate_D → Judge. Returns action int."""
-        print(f"\n[Debate R{round_num}] Running Advocate_C vs Advocate_D...")
+        import concurrent.futures  # noqa: PLC0415
+        print(f"[Debate R{round_num}] Running Advocate_C vs Advocate_D...")
 
-        adv_c = Agent(client=self.client, system=self._system)
-        case_c = adv_c(_ADVOCATE_C.format(context=context)) or ""
+        def _call_advocate(prompt_template: str) -> str:
+            agent = Agent(client=self.client, system=self._system)
+            return agent(prompt_template.format(context=context)) or ""
 
-        adv_d = Agent(client=self.client, system=self._system)
-        case_d = adv_d(_ADVOCATE_D.format(context=context)) or ""
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            future_c = pool.submit(_call_advocate, _ADVOCATE_C)
+            future_d = pool.submit(_call_advocate, _ADVOCATE_D)
+            case_c = future_c.result()
+            case_d = future_d.result()
 
         c_hit = re.search(r"ADVOCATE COOPERATE:\s*(.+)$", case_c, re.IGNORECASE | re.MULTILINE)
         d_hit = re.search(r"ADVOCATE DEFECT:\s*(.+)$", case_d, re.IGNORECASE | re.MULTILINE)
-        print(f"  [Adv-C]: {(c_hit.group(1) if c_hit else case_c[-120:]).strip()}")
-        print(f"  [Adv-D]: {(d_hit.group(1) if d_hit else case_d[-120:]).strip()}")
+        if self.verbose:
+            print(f"\n[Adv-C full]\n{case_c}\n")
+            print(f"\n[Adv-D full]\n{case_d}\n")
+        else:
+            print(f"  Adv-C: {(c_hit.group(1) if c_hit else case_c[-120:]).strip()}")
+            print(f"  Adv-D: {(d_hit.group(1) if d_hit else case_d[-120:]).strip()}")
 
         judge = Agent(client=self.client, system=self._system)
         judge_resp = judge(_JUDGE.format(
@@ -215,21 +234,11 @@ class TournamentAgent:
             defect_case=case_d[-800:],
             context=context,
         )) or ""
-        print(f"\n[Debate R{round_num} JUDGE]\n{judge_resp}\n")
+        if self.verbose:
+            print(f"\n[Debate R{round_num} JUDGE]\n{judge_resp}\n")
 
         if judge_resp:
-            hyp_hit = re.search(
-                r"Type hypothesis:\s*(Always Defect|Naive Cooperator|Tit-for-Tat|Grim Trigger"
-                r"|Pavlov|Strategic/Adaptive|Unknown)",
-                judge_resp, re.IGNORECASE,
-            )
-            if hyp_hit:
-                self._last_hypothesis = hyp_hit.group(1)
-            conf_hit = re.search(r"Confidence:\s*(\d+)", judge_resp)
-            if conf_hit:
-                self._last_confidence = min(float(conf_hit.group(1)), 100.0) / 100.0
-            if re.search(r"Deception.*?:\s*yes", judge_resp, re.IGNORECASE):
-                self._deception_count += 1
+            self._extract_hypothesis(judge_resp)
 
         return parse_action(judge_resp)
 
@@ -270,16 +279,104 @@ class TournamentAgent:
             deception_count=self._deception_count,
             leaderboard_block=self._leaderboard_block(),
             behavioral=self._behavioral,
+            hypothesis=self._last_hypothesis,
         )
         agent = Agent(client=self.client, system=self._system)
         response = agent(context)
-        print(f"\n[TournamentAgent R{round_num} MESSAGE]\n{response}\n")
+        if self.verbose:
+            print(f"\n[R{round_num} MESSAGE REASONING]\n{response}\n")
 
         message = parse_message(response or "")
         words = message.split()
         if len(words) > 50:
             message = " ".join(words[:50])
+        print(f'[R{round_num}] Sending : "{message}"')
         return message
+
+    def _opponent_defects_late(self, total_rounds: int) -> bool:
+        """True if opponent defected on R7 or R8 in any prior match against us."""
+        for match in self.profile.get("match_history", []):
+            for r in match.get("rounds", []):
+                if r.get("opp_action") == "defect" and r.get("round", 0) >= total_rounds - 1:
+                    return True
+        return False
+
+    def _is_confirmed_passive(self, match_history: list[dict]) -> bool:
+        """
+        True if opponent has cooperated every round so far (min 3) and sent
+        no punishment-signaling language in any message.
+        """
+        if len(match_history) < 3:
+            return False
+        for r in match_history:
+            if r.get("opp_action") == "defect":
+                return False
+            if _PUNISHMENT_SIGNALS.search(r.get("opp_msg") or ""):
+                return False
+        return True
+
+    def _compute_extraction_round(self, total_rounds: int) -> int:
+        """
+        Decide which round to start extracting against a confirmed passive cooperator.
+        Range: R4 (aggressive) to R(total-2) (conservative). R8 is always hardcoded separately.
+
+        Inputs used (in priority order):
+          1. Prior match history with this specific opponent — did prior extraction succeed/fail?
+          2. Leaderboard pressure — how urgently do we need points?
+          3. Behavioral forgiveness rate this match — how quickly do they recover after defection?
+          4. Matches played — first encounter vs. repeat.
+        """
+        earliest = 4
+        latest = total_rounds - 2  # leaves R7 for pre-empt logic and R8 hardcoded
+
+        # Default: conservative — don't tip hand until we have data
+        extraction_round = latest
+
+        prior_matches = self.profile.get("match_history", [])
+        matches_played = int(self.profile.get("matches_played") or 0)
+
+        if matches_played >= 1 and prior_matches:
+            # Check what happened in the most recent prior match
+            last = prior_matches[-1]
+            prior_rounds = last.get("rounds", [])
+            my_defects = [r for r in prior_rounds if r.get("my_action") == "defect"]
+            if my_defects:
+                first_defect_round = min(r["round"] for r in my_defects)
+                opp_retaliated = any(
+                    r.get("opp_action") == "defect" and r.get("round", 0) > first_defect_round
+                    for r in prior_rounds
+                )
+                if not opp_retaliated:
+                    # They absorbed prior defection — go one round earlier this time
+                    extraction_round = max(earliest, first_defect_round - 1)
+                else:
+                    # They punished — extract just before the round they retaliated at
+                    retaliation_round = min(
+                        r["round"] for r in prior_rounds
+                        if r.get("opp_action") == "defect" and r.get("round", 0) > first_defect_round
+                    )
+                    extraction_round = max(earliest, min(latest, retaliation_round - 1))
+            else:
+                # Prior match had no defections at all (both cooperated) — try extracting earlier
+                extraction_round = max(earliest, latest - 1)
+
+        # Leaderboard adjustment
+        if self._rank is not None and self._total_players is not None:
+            rank_pct = self._rank / self._total_players
+            gap = self._score_gap_to_above or 0.0
+            if rank_pct >= 0.6 and gap < -1.0:
+                # Bottom 40% and meaningfully behind — need points, extract earlier
+                extraction_round = max(earliest, extraction_round - 1)
+            elif rank_pct <= 0.3:
+                # Top 30% — protect lead, extract later
+                extraction_round = min(latest, extraction_round + 1)
+
+        # Behavioral forgiveness: high forgive_rate means they reset quickly after defection,
+        # so we can extract earlier and still recover if needed
+        if self._behavioral.rounds_seen >= 3 and self._behavioral.forgive_rate >= 0.7:
+            extraction_round = max(earliest, extraction_round - 1)
+
+        return max(earliest, min(latest, extraction_round))
 
     def choose_action(
         self,
@@ -290,8 +387,14 @@ class TournamentAgent:
         match_history: list[dict],
         my_score: float = 0.0,
         opp_score: float = 0.0,
+        time_budget_seconds: float = 25.0,
     ) -> int:
-        """MOVING PHASE: choose action after seeing opponent's message. Returns 0 or 1."""
+        """MOVING PHASE: choose action after seeing opponent's message. Returns 0 or 1.
+
+        time_budget_seconds: soft deadline for this call. If debate would likely exceed it,
+        fall back to the single-call path. Default 25s leaves headroom inside a 30s platform limit.
+        """
+        _phase_start = time.monotonic()
         last_r = self._match_rounds[-1] if self._match_rounds else None
         my_last = last_r.get("my_action") if last_r else None
         opp_last = last_r.get("opp_action") if last_r else None
@@ -323,18 +426,60 @@ class TournamentAgent:
             self_pattern=self._self_pattern,
         )
 
-        if self._should_debate(round_num, total_rounds):
-            action_int = self._run_debate(context, round_num)
-            self._debate_count += 1
+        # --- Hard overrides (no LLM call needed) ---
+
+        already_mutual_defection = (
+            len(self._match_rounds) >= 2
+            and all(r.get("my_action") == "defect" and r.get("opp_action") == "defect"
+                    for r in self._match_rounds[-2:])
+        )
+
+        # Print opponent's message before the decision so terminal output reads naturally.
+        print(f'[R{round_num}] Received: "{opponent_message}"')
+
+        if round_num == total_rounds and not already_mutual_defection:
+            # R8: dominated strategy — defect always when opponent has been cooperating.
+            action_int = self.ACTION_DEFECT
+            print(f"[R{round_num}] FINAL ROUND — hardcoded defect")
+
+        elif round_num == total_rounds - 1 and self._opponent_defects_late(total_rounds):
+            # R7: pre-empt opponent's known late-game defect pattern before they steal our harvest.
+            action_int = self.ACTION_DEFECT
+            print(f"[R{round_num}] PRE-EMPT — opponent has late-defect history, taking R7 instead")
+
+        elif (match_history
+              and match_history[-1].get("opp_action") == "defect"
+              and match_history[-1].get("my_action") == "cooperate"):
+            # Mirror rule: opponent defected while we cooperated last round.
+            # Defect unconditionally — their current message cannot override observed betrayal.
+            action_int = self.ACTION_DEFECT
+            print(f"[R{round_num}] MIRROR — opponent defected R{match_history[-1]['round']} while we cooperated")
+
+        elif self._is_confirmed_passive(match_history) and round_num >= self._compute_extraction_round(total_rounds):
+            # Passive confirmed: extract at the round computed from prior match history,
+            # leaderboard pressure, and observed forgiveness rate.
+            action_int = self.ACTION_DEFECT
+            ext_r = self._compute_extraction_round(total_rounds)
+            print(f"[R{round_num}] PASSIVE CONFIRMED — extracting (computed R{ext_r} from history/leaderboard/behavior)")
+
         else:
-            agent = Agent(client=self.client, system=self._system)
-            response = agent(context)
-            print(f"\n[TournamentAgent R{round_num} ACTION]\n{response}\n")
-            action_int = parse_action(response or "")
-            if response:
-                self._extract_hypothesis(response)
+            # LLM decides.
+            elapsed = time.monotonic() - _phase_start
+            time_ok = (time_budget_seconds - elapsed) >= 12.0  # conservative: ~4s/call × 3
+            if self._should_debate(round_num, total_rounds) and time_ok:
+                action_int = self._run_debate(context, round_num)
+                self._debate_count += 1
+            else:
+                agent = Agent(client=self.client, system=self._system)
+                response = agent(context)
+                if self.verbose:
+                    print(f"\n[R{round_num} ACTION REASONING]\n{response}\n")
+                action_int = parse_action(response or "")
+                if response:
+                    self._extract_hypothesis(response)
 
         action_label = "cooperate" if action_int == 0 else "defect"
+        print(f"[R{round_num}] → {action_label.upper()} | {self._last_hypothesis} ({self._last_confidence:.0%})")
         self._match_rounds.append({
             "round": round_num,
             "opp_msg": opponent_message,
@@ -366,11 +511,14 @@ class TournamentAgent:
         if bayes_conf > self._last_confidence + 0.1:
             self._last_hypothesis = bayes_type
             self._last_confidence = bayes_conf
-        print(
-            f"[Bayes R{round_num}] {bayes_type} ({bayes_conf:.0%}) | "
-            + " ".join(f"{t.split('/')[0]}:{p:.0%}" for t, p in
-                       sorted(self._type_posterior.items(), key=lambda x: -x[1])[:3])
-        )
+        if self.verbose:
+            print(
+                f"[Bayes R{round_num}] {bayes_type} ({bayes_conf:.0%}) | "
+                + " ".join(f"{t.split('/')[0]}:{p:.0%}" for t, p in
+                           sorted(self._type_posterior.items(), key=lambda x: -x[1])[:3])
+            )
+        else:
+            print(f"[Bayes R{round_num}] {bayes_type} ({bayes_conf:.0%})")
 
         # Intra-match adaptation: flag hypothesis violations
         h = self._last_hypothesis
@@ -386,28 +534,71 @@ class TournamentAgent:
         if self._hypothesis_violations >= 2 and self._last_confidence >= 0.75:
             self._hypothesis_violations = 0
 
-        # Message credibility: cross-match lie rate on opponent profile
+        # Message credibility — track both opponent's lies and our own per-opponent
         current = next((r for r in self._match_rounds if r["round"] == round_num), None)
         if current:
-            _COOP_WORDS = ("cooperat", "together", "mutual", "both", "trust", "fair", "agree", "let's")
             opp_msg = (current.get("opp_msg") or "").lower()
-            if any(w in opp_msg for w in _COOP_WORDS) and opp_action == "defect":
+            my_msg  = (current.get("my_msg")  or "").lower()
+            my_action = (current.get("my_action") or "").lower()
+            if any(w in opp_msg for w in COOP_WORDS) and opp_action == "defect":
                 self.profile["message_lies"] = self.profile.get("message_lies", 0) + 1
+            if any(w in my_msg for w in COOP_WORDS) and my_action == "defect":
+                self.profile["my_lies_to_opp"] = self.profile.get("my_lies_to_opp", 0) + 1
             n = len(self._match_rounds)
             if n > 0:
                 self.profile["msg_lie_rate"] = round(
                     self.profile.get("message_lies", 0) / n, 2
                 )
+                my_coop_msgs = sum(
+                    1 for r in self._match_rounds
+                    if any(w in (r.get("my_msg") or "").lower() for w in COOP_WORDS)
+                )
+                if my_coop_msgs > 0:
+                    self.profile["my_lie_rate_to_opp"] = round(
+                        self.profile.get("my_lies_to_opp", 0) / my_coop_msgs, 2
+                    )
+
+    def _save_message_log(self, my_avg_score: float, opp_avg_score: float) -> None:
+        """Write per-round messages and actions to traces/messages_{run_id}.json."""
+        import json as _json
+        traces_dir = ROOT_DIR / "traces"
+        traces_dir.mkdir(exist_ok=True)
+        outcome = (
+            "WIN" if my_avg_score > opp_avg_score
+            else "LOSS" if my_avg_score < opp_avg_score
+            else "DRAW"
+        )
+        data = {
+            "run_id": self._run_id,
+            "opponent_id": self.opponent_id,
+            "outcome": outcome,
+            "my_avg_score": my_avg_score,
+            "opp_avg_score": opp_avg_score,
+            "rounds": [
+                {
+                    "round": r["round"],
+                    "my_message": r.get("my_msg", ""),
+                    "my_action": r.get("my_action", ""),
+                    "opp_message": r.get("opp_msg", ""),
+                    "opp_action": r.get("opp_action", ""),
+                    "my_pts": r.get("my_pts"),
+                    "opp_pts": r.get("opp_pts"),
+                }
+                for r in self._match_rounds
+            ],
+        }
+        path = traces_dir / f"messages_{self._run_id}.json"
+        path.write_text(_json.dumps(data, indent=2), encoding="utf-8")
+        print(f"[TournamentAgent] Message log → {path.relative_to(ROOT_DIR)}")
 
     def end_match(self, my_avg_score: float, opp_avg_score: float) -> None:
         """Summarize match via LLM, update opponent profile, persist to DB, log analytics."""
-        from agent.tracing import judge_match_rounds  # noqa: PLC0415
-
+        self._save_message_log(my_avg_score, opp_avg_score)
         self.profile = update_profile_after_match(
             self.profile, self._match_rounds, my_avg_score, opp_avg_score, self.client,
         )
-        save_opponent_profile(self.profile)
-        log_tournament_result({
+        save_opponent(self.profile)
+        log_match({
             "opponent_id": self.opponent_id,
             "my_avg_score": my_avg_score,
             "opp_avg_score": opp_avg_score,
@@ -455,7 +646,7 @@ _NPC_MESSAGES = {
 
 def run_tournament_match(
     opponent_strategy: str = "tit_for_tat",
-    rounds: int = 10,
+    rounds: int = 8,
     opponent_id: str | None = None,
 ) -> None:
     """Test TournamentAgent locally against a scripted NPC (no platform required)."""
@@ -474,21 +665,25 @@ def run_tournament_match(
         round_num = game.current_round
         my_score = float(game.agent_score)
         opp_score = float(game.opponent_score)
+        _round_start = time.monotonic()
         print(f"\n── Round {round_num} ── Score: me {my_score:.0f} | them {opp_score:.0f}")
 
         message = agent.compose_message(
             round_num=round_num, total_rounds=rounds,
             match_history=match_history, my_score=my_score, opp_score=opp_score,
         )
-        print(f"  Agent message : {message}")
+        _msg_elapsed = time.monotonic() - _round_start
+        print(f"  Agent message : {message}  [{_msg_elapsed:.1f}s]")
 
         action_int = agent.choose_action(
             round_num=round_num, total_rounds=rounds,
             opponent_message=npc_msg, my_message=message,
             match_history=match_history, my_score=my_score, opp_score=opp_score,
         )
+        _round_elapsed = time.monotonic() - _round_start
         action = "cooperate" if action_int == 0 else "defect"
-        print(f"  Agent action  : {action}")
+        budget_ok = "✓" if _round_elapsed < 25 else "⚠ SLOW"
+        print(f"  Agent action  : {action}  [round total: {_round_elapsed:.1f}s {budget_ok}]")
 
         game.make_move(action)
         last_a, last_o = game.history[-1]
@@ -517,7 +712,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="TournamentAgent local test")
     parser.add_argument("--strategy", default="tit_for_tat",
                         choices=PrisonersDilemma.OPPONENT_STRATEGIES)
-    parser.add_argument("--rounds", type=int, default=10)
+    parser.add_argument("--rounds", type=int, default=8)
     parser.add_argument("--opponent", default=None)
     args = parser.parse_args()
     run_tournament_match(

@@ -1,0 +1,3 @@
+## Strategy Update — 2026-06-04 15:37 UTC (20 matches)
+
+Move the “harvest” (full defection) phase up to the earliest round after an opponent absorbs a defection without retaliation—extract versus Naive Cooperators as soon as safe, not just R6+. Strictly limit dishonest (cooperate-message while defecting) communication to the actual exploitation round—never mid-game. Against learning or repeated opponents, randomize the timing of your late harvest: defect in either R7 or R8 unpredictably. Always frame early messages in explicitly conditional terms (“I reward cooperation, I mirror defections”) to deter exploitation and boost mutual trust.

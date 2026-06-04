@@ -41,12 +41,13 @@ from games.pd_game import PrisonersDilemma  # noqa: E402
 # =============================================================================
 
 ORACLE_SCORES: dict[str, float] = {
-    "always_cooperate": 5.00,   # defect every round
-    "random":           3.00,   # defect every round (random opp cooperates ~50%)
-    "pavlov":           2.50,   # defect every round (Pavlov oscillates C/D)
-    "tit_for_tat":      2.30,   # cooperate 9, defect final
-    "grim_trigger":     2.30,   # cooperate 9, defect final
-    "generous_tft":     2.30,   # cooperate 9, defect final
+    # Calibrated for 8-round games.
+    "always_cooperate": 5.00,   # defect every round → 5.0
+    "random":           2.50,   # defect every round (random cooperates ~50% → EV 0.5×5=2.5)
+    "pavlov":           2.50,   # defect every round (Pavlov oscillates C/D → avg 2.5)
+    "tit_for_tat":      2.38,   # cooperate 7, defect final → (7×2+5)/8 = 2.375
+    "grim_trigger":     2.38,   # cooperate 7, defect final → (7×2+5)/8 = 2.375
+    "generous_tft":     2.38,   # cooperate 7, defect final → (7×2+5)/8 = 2.375
     "always_defect":    0.00,   # defect (best = 0; cooperating gives -1)
 }
 
@@ -400,8 +401,8 @@ def main() -> None:
                         help="Also run behavioral scenarios (Tier 2B, adds more LLM calls)")
     parser.add_argument("--n",          type=int, default=2,
                         help="Games per NPC strategy for oracle efficiency (default: 2)")
-    parser.add_argument("--rounds",     type=int, default=10,
-                        help="Rounds per game (default: 10)")
+    parser.add_argument("--rounds",     type=int, default=8,
+                        help="Rounds per game (default: 8)")
     args = parser.parse_args()
 
     total_failures = 0

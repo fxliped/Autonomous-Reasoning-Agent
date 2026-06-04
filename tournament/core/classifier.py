@@ -14,6 +14,8 @@ Two complementary models:
 Both are updated in TournamentAgent.record_round_result() after each round.
 """
 
+from analytics.db import COOP_WORDS  # noqa: E402
+
 
 # =============================================================================
 # BEHAVIORAL PROFILE (empirical, no named-type assumptions)
@@ -31,8 +33,6 @@ class BehavioralProfile:
 
     Degrades gracefully with few data points: all rates start at 0.5 (uninformative).
     """
-
-    _COOP_WORDS = ("cooperat", "together", "mutual", "both", "trust", "fair", "agree", "let's")
 
     def __init__(self) -> None:
         self.coop_rate: float = 0.5
@@ -69,7 +69,7 @@ class BehavioralProfile:
         cred_n = cred_d = 0
         for r in completed:
             msg = (r.get("opp_msg") or "").lower()
-            if any(w in msg for w in self._COOP_WORDS):
+            if any(w in msg for w in COOP_WORDS):
                 cred_d += 1
                 if r["opp_action"] == "cooperate":
                     cred_n += 1
