@@ -180,14 +180,14 @@ def _last_round_review(match_history: list[dict]) -> str:
     alt_pts = _PAYOFFS.get((alt, opp_a), 0)
     delta = alt_pts - my_pts
     if delta > 0:
-        verdict = f"{alt.upper()} would have scored {alt_pts:+d} ({delta:+d} pts better)"
+        verdict = f"{alt.upper()} would have scored {int(alt_pts):+d} ({int(delta):+d} pts better)"
     elif delta < 0:
-        verdict = f"{my_a.upper()} was optimal ({alt.upper()} would have scored {alt_pts:+d})"
+        verdict = f"{my_a.upper()} was optimal ({alt.upper()} would have scored {int(alt_pts):+d})"
     else:
         verdict = "both choices yield same result vs. their move"
     return (
         f"LAST ROUND REVIEW (R{last['round']}): "
-        f"You {my_a.upper()} | they {opp_a.upper()} → {my_pts:+d} pts. {verdict}."
+        f"You {my_a.upper()} | they {opp_a.upper()} → {int(my_pts):+d} pts. {verdict}."
     )
 
 

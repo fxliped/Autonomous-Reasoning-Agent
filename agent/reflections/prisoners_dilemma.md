@@ -123,3 +123,13 @@ Against confirmed Always Defect bots, commit immediately to all-defect and avoid
 ## Reflection from tournament_npc_always_defect_20260604_153138_d2fd0b3c
 
 Against confirmed Always Defect opponents, always defect every round — there is no benefit to attempting cooperation or deception. Deceptive/cooperative messages are wasted and can be reserved only if there is uncertainty about opponent type. Classification should be confirmed by Round 2; minimize signaling beyond initial probe and harvest max mutual defection points. Immediate focus should shift from narrative building to payoff maximization upon type confirmation.
+
+
+## Reflection from tournament_0bb30ca7-f237-41d9-a0bf-d3849468af87_20260604_223025_fde197c6
+
+Against a Naive Cooperator, escalate to exploitation as soon as their unconditional cooperation is confirmed—instead of waiting until the last round, start defecting with a safety buffer before the match ends. Deception via cooperative messaging is highly effective when paired with defection, but should only be used once opponent passivity is certain. Fine-tune the arc phase by abbreviating midgame cooperation and bringing forward the harvest phase by 1-2 rounds against opponents displaying unwavering cooperation.
+
+
+## Reflection from tournament_0bb30ca7-f237-41d9-a0bf-d3849468af87_20260604_223553_8f2d73e3
+
+Against a naive cooperator, pivot quickly from mutual cooperation to exploitation once their type is confirmed—take at least one defection for a +5 swing before endgame. Use cooperative messaging until the first safe defect, then reevaluate based on their response. Arc phases should move rapidly from classification to point harvesting, minimizing drawn-out cooperative stretches when exploit opportunities exist. Deception is worth the risk immediately after confirmation but should be carefully messaged to preserve later returns if the opponent remains naive.

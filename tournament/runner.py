@@ -14,6 +14,7 @@ Usage:
   python tournament/runner.py --signup "MyAgentName" # register once
 """
 
+import re
 import sys
 import json
 import time
@@ -127,8 +128,7 @@ class AltruAgentClient:
     def send_message(self, session_id: str, content: str,
                      game_server: str | None = None,
                      recipients: list[int] | None = None) -> dict:
-        # recipients defaults to [1] (opponent in 2-player game per API docs).
-        # Pass recipients=[0] if the state reveals we are player index 1.
+        # recipients=[] means broadcast (reaches all other players); safe for 2-player games.
         return self._post(
             f"/games/{session_id}/message",
             {"recipients": recipients if recipients is not None else [1],
@@ -277,19 +277,33 @@ def play_session(
 
         phase = state.get("phase", "moving")
         next_action = ((state.get("next_actions") or [{}])[0]).get("action", "")
-        current_round = state.get("current_round", 1)
-        total_rounds = state.get("total_rounds", 8)
+        current_round = state.get("current_round") or 1
+        total_rounds = state.get("total_rounds") or 8
 
-        # Resolve our player name and opponent recipient index once
-        if not my_name and state.get("current_player"):
-            my_name = _my_name(state)
-        if not opp_name and my_name:
+        # Resolve our player name and opponent recipient index once.
+        # Use client.agent_name as primary — current_player in simultaneous-move phases
+        # may return the opponent's name rather than ours, causing wrong recipient index.
+        if not my_name:
+            my_name = getattr(client, "agent_name", "") or _my_name(state)
+        if my_name and not opp_name:
             opp_name = _opponent_name(state, my_name)
-            # Determine opponent's player index for targeted messaging
-            players = state.get("players") or []
-            if my_name in players:
-                my_idx = players.index(my_name)
-                opp_recipient_index = 1 - my_idx  # 0→1 or 1→0
+            # players can be a list of strings or a list of dicts depending on API version.
+            players_raw = state.get("players") or []
+            player_names = [
+                (p if isinstance(p, str) else p.get("name", ""))
+                for p in players_raw
+            ]
+            if my_name in player_names:
+                my_idx = player_names.index(my_name)
+                opp_recipient_index = 1 - my_idx
+            else:
+                # Fallback: derive from cumulative_scores key order
+                score_keys = list((state.get("cumulative_scores") or {}).keys())
+                if my_name in score_keys:
+                    my_idx = score_keys.index(my_name)
+                    opp_recipient_index = 1 - my_idx
+            print(f"[Session] Me={my_name} (player idx {1 - opp_recipient_index}) "
+                  f"→ opp={opp_name} (player idx {opp_recipient_index})")
 
         # --- WAIT ---
         if next_action == "wait_for_opponent":
@@ -334,12 +348,14 @@ def play_session(
                 print(f"[R{current_round}] Composed in {time.monotonic()-_msg_start:.1f}s")
                 my_msg_log[current_round] = message_sent_this_round
                 resp = client.send_message(session_id, message_sent_this_round, game_server,
-                                           recipients=[opp_recipient_index])
+                                           recipients=[])
                 err = resp.get("error")
                 if err == "messages_quota_exceeded":
-                    print(f"[Messaging] Quota exceeded — terminating directly.")
+                    print(f"[Messaging R{current_round}] Quota exceeded — terminating directly.")
                 elif err:
-                    print(f"[Messaging] Send error: {err}")
+                    print(f"[Messaging R{current_round}] Send error: {err} | resp: {resp}")
+                else:
+                    print(f"[R{current_round}] Message sent to idx {opp_recipient_index} ✓")
 
             # Terminate to advance to MOVING phase
             client.terminate_messaging(session_id, game_server)
@@ -436,10 +452,23 @@ def play_session(
 def run_tournament(client: AltruAgentClient, tournament_id: str, verbose: bool = False) -> None:
     """Poll a tournament and play each child session as it becomes available."""
     print(f"\n[Tournament] Watching {tournament_id}")
+    _poll_count = 0
+    _played_sessions: set[str] = set()
 
     while True:
         t = client.poll_tournament(tournament_id)
+        _poll_count += 1
         status = t.get("status") or t.get("tournament", {}).get("status", "")
+
+        # First poll: dump response structure so we can see what keys the API returns.
+        if _poll_count == 1:
+            print(f"[Tournament] First poll — top-level keys: {list(t.keys())}")
+            viewer_raw = t.get("viewer")
+            print(f"[Tournament] viewer present: {viewer_raw is not None} | "
+                  f"viewer keys: {list(viewer_raw.keys()) if isinstance(viewer_raw, dict) else viewer_raw}")
+            na_raw = (viewer_raw or {}).get("next_actions") if isinstance(viewer_raw, dict) else None
+            print(f"[Tournament] next_actions: {na_raw}")
+            print(f"[Tournament] status={status!r}")
 
         if status == "completed":
             print(f"[Tournament] Completed.")
@@ -455,19 +484,52 @@ def run_tournament(client: AltruAgentClient, tournament_id: str, verbose: bool =
         next_actions = viewer.get("next_actions") or []
         action_code = (next_actions[0].get("action") if next_actions else "") or ""
 
+        # If the API explicitly tells us to join (e.g. admin-shared tournament before start)
+        if viewer.get("should_join_tournament"):
+            print(f"[Tournament] API requests join — joining now...")
+            client.join_tournament(tournament_id)
+
+        # Heartbeat every 30s so terminal doesn't look frozen
+        if _poll_count % 15 == 0:
+            print(f"[Tournament] Still watching... (poll #{_poll_count}, action={action_code!r}, status={status!r})")
+
         if action_code == "tournament_complete":
             print("[Tournament] Received tournament_complete signal.")
             return
 
         if action_code == "play_child_session":
-            session_id = next_actions[0].get("session_id") or ""
-            game_server = next_actions[0].get("game_server_url") or GAME_SERVER_FALLBACK
-            if not session_id:
-                # also try active_child_session_ids
-                ids = t.get("active_child_session_ids") or []
-                session_id = ids[0] if ids else ""
+            action_data = next_actions[0]
+            session_id = action_data.get("session_id") or ""
+            game_server = action_data.get("game_server_url") or ""
 
-            if session_id:
+            # API v2 format: both session_id and game_server are encoded in 'endpoint'.
+            # e.g. "GET GameAp-Servi-xxx.amazonaws.com/games/SESSION-UUID"
+            if not session_id or not game_server:
+                endpoint = re.sub(r'^(GET|POST)\s+', '', action_data.get("endpoint") or "").strip()
+                m = re.search(r'/games/([0-9a-f-]{36})', endpoint)
+                if m:
+                    session_id = session_id or m.group(1)
+                if not game_server and '/games/' in endpoint:
+                    host = endpoint.split('/games/')[0]
+                    game_server = host if host.startswith('http') else f'http://{host}'
+
+            # Last resort: viewer.active_child_session_ids (note: in viewer, not t)
+            if not session_id:
+                ids = viewer.get("active_child_session_ids") or []
+                session_id = ids[0] if ids else ""
+            if not game_server:
+                game_server = GAME_SERVER_FALLBACK
+
+            if session_id and session_id not in _played_sessions:
+                _played_sessions.add(session_id)
+                print(f"[Tournament] Playing session {session_id}")
+            elif session_id in _played_sessions:
+                time.sleep(POLL_INTERVAL)
+                continue
+            else:
+                print(f"[Tournament] play_child_session but couldn't extract session — action: {action_data}")
+
+            if session_id and session_id in _played_sessions:
                 # Determine opponent name from tournament roster
                 roster = t.get("participants") or []
                 my_agent_id = viewer.get("agent_id") or ""
@@ -512,7 +574,11 @@ def run_tournament(client: AltruAgentClient, tournament_id: str, verbose: bool =
                 play_session(client, session_id, agent, game_server)  # verbose is in agent
 
         elif action_code == "wait_for_child_match":
-            pass  # normal — no active match yet
+            pass  # waiting for scheduler to assign a match
+
+        elif action_code:
+            # Unknown action code — print it once so we can adapt
+            print(f"[Tournament] Unhandled action_code={action_code!r} — full next_actions: {next_actions}")
 
         time.sleep(POLL_INTERVAL)
 
@@ -536,9 +602,18 @@ def run_queue_loop(client: AltruAgentClient, queue_id: str, verbose: bool = Fals
             if waiting is None:
                 print("[Queue] Tournament started.")
                 break
-            secs = (waiting or {}).get("seconds_until_start", "?")
+            secs = (waiting or {}).get("seconds_until_start") or "?"
             print(f"[Queue] Waiting... ~{secs}s until start.")
             time.sleep(POLL_INTERVAL)
+
+        # Attempt explicit join in case the server needs it (no-op if already registered via queue).
+        join_resp = client.join_tournament(tournament_id)
+        join_err = join_resp.get("error") if isinstance(join_resp, dict) else None
+        if not join_err or join_err in ("already_joined", "join_failed"):
+            # join_failed = "not accepting participants" = already registered via queue — normal.
+            print(f"[Queue] Participant confirmed for tournament {tournament_id}.")
+        else:
+            print(f"[Queue] join_tournament unexpected error: {join_err} — {join_resp}")
 
         run_tournament(client, tournament_id, verbose=verbose)
 

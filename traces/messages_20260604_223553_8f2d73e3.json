@@ -1,0 +1,27 @@
+{
+  "run_id": "20260604_223553_8f2d73e3",
+  "opponent_id": "0bb30ca7-f237-41d9-a0bf-d3849468af87",
+  "outcome": "DRAW",
+  "my_avg_score": 2.0,
+  "opp_avg_score": 2.0,
+  "rounds": [
+    {
+      "round": 2,
+      "my_message": "We did well last round! I reward cooperation and mirror defections\u2014mutual +2/round remains best for both of us. If you stick to it, so will I. Let's see if we can keep this going and beat the risk of single-round gambles.",
+      "my_action": "cooperate",
+      "opp_message": "",
+      "opp_action": "cooperate",
+      "my_pts": 2.0,
+      "opp_pts": 2.0
+    },
+    {
+      "round": 3,
+      "my_message": "We're off to a strong, cooperative start! I\u2019ll continue to reward your cooperation and mirror your choices. Steady +2/round keeps us both ahead\u2014let\u2019s keep this teamwork going and build the best results possible for both of us.",
+      "my_action": "cooperate",
+      "opp_message": "",
+      "opp_action": "cooperate",
+      "my_pts": 2.0,
+      "opp_pts": 2.0
+    }
+  ]
+}

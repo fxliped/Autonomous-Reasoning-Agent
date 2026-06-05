@@ -437,8 +437,9 @@ class TournamentAgent:
         # Print opponent's message before the decision so terminal output reads naturally.
         print(f'[R{round_num}] Received: "{opponent_message}"')
 
-        if round_num == total_rounds and not already_mutual_defection:
-            # R8: dominated strategy — defect always when opponent has been cooperating.
+        if round_num == total_rounds:
+            # Final round: defect is dominant regardless of opponent type.
+            # D vs C = +5, D vs D = 0; C vs C = +2, C vs D = -1. Always defect.
             action_int = self.ACTION_DEFECT
             print(f"[R{round_num}] FINAL ROUND — hardcoded defect")
 
