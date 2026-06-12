@@ -1,4 +1,6 @@
-# Autonomous Reasoning Agent
+# Autonomous Reasoning Agent 
+# Team Name: Secret Agents
+# Team Members: Felipe Duenas, Sarthak Mohindru, Warren Wu, Sayalee Damle
 
 This project implements ReAct-style agents that play repeated games, currently:
 
