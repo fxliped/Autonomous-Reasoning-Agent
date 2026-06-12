@@ -1,0 +1,46 @@
+[bot sarthak_random_bot] ready, strategy=random
+  [bot sarthak_random_bot] joining queue b6f0e9ce
+  [bot sarthak_random_bot] playing 36baf380
+    [bot sarthak_random_bot] R1 cooperate (action=0)
+    [bot sarthak_random_bot] R2 defect (action=1)
+    [bot sarthak_random_bot] R3 cooperate (action=0)
+    [bot sarthak_random_bot] R4 cooperate (action=0)
+    [bot sarthak_random_bot] R5 defect (action=1)
+    [bot sarthak_random_bot] R6 defect (action=1)
+    [bot sarthak_random_bot] R7 cooperate (action=0)
+    [bot sarthak_random_bot] R8 cooperate (action=0)
+  [bot sarthak_random_bot] done 36baf380 returns={'sarthak_random_bot': -0.625, 'sarthak_defect_bot': 3.125}
+  [bot sarthak_random_bot] playing 7aca3b55
+    [bot sarthak_random_bot] R1 defect (action=1)
+    [bot sarthak_random_bot] R2 cooperate (action=0)
+Traceback (most recent call last):
+  File "/Users/sarthakmohindru/Desktop/Autonomous-Reasoning-Agent-main/games/scripted_bot.py", line 260, in <module>
+    main()
+    ~~~~^^
+  File "/Users/sarthakmohindru/Desktop/Autonomous-Reasoning-Agent-main/games/scripted_bot.py", line 252, in main
+    bot.run_queue(args.queue)
+    ~~~~~~~~~~~~~^^^^^^^^^^^^
+  File "/Users/sarthakmohindru/Desktop/Autonomous-Reasoning-Agent-main/games/scripted_bot.py", line 215, in run_queue
+    self.run_tournament(tid)
+    ~~~~~~~~~~~~~~~~~~~^^^^^
+  File "/Users/sarthakmohindru/Desktop/Autonomous-Reasoning-Agent-main/games/scripted_bot.py", line 234, in run_tournament
+    self.play_session(gsu, sid)
+    ~~~~~~~~~~~~~~~~~^^^^^^^^^^
+  File "/Users/sarthakmohindru/Desktop/Autonomous-Reasoning-Agent-main/games/scripted_bot.py", line 179, in play_session
+    self.client.terminate_messaging(gsu, sid)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^
+  File "/Users/sarthakmohindru/Desktop/Autonomous-Reasoning-Agent-main/agent/altruagent_client.py", line 240, in terminate_messaging
+    return self._request(
+           ~~~~~~~~~~~~~^
+        "POST", f"{base}/games/{session_id}/message", json_body={"recipients": [], "type": "terminate"}
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/sarthakmohindru/Desktop/Autonomous-Reasoning-Agent-main/agent/altruagent_client.py", line 116, in _request
+    return self._parse(resp)
+           ~~~~~~~~~~~^^^^^^
+  File "/Users/sarthakmohindru/Desktop/Autonomous-Reasoning-Agent-main/agent/altruagent_client.py", line 126, in _parse
+    raise AltruAgentError(
+    ...<4 lines>...
+    )
+agent.altruagent_client.AltruAgentError: [429 rate_limit_exceeded] Rate limit exceeded. Try again later.

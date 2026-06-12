@@ -1,0 +1,30 @@
+[bot sarthak_defect_bot] ready, strategy=always_defect
+  [bot sarthak_defect_bot] joining queue 549e58d8
+  [bot sarthak_defect_bot] playing 9b167d67
+    [bot sarthak_defect_bot] R1 defect
+    [bot sarthak_defect_bot] R2 defect
+    [bot sarthak_defect_bot] R3 defect
+    [bot sarthak_defect_bot] R4 defect
+    [bot sarthak_defect_bot] R5 defect
+    [bot sarthak_defect_bot] R6 defect
+    [bot sarthak_defect_bot] R7 defect
+    [bot sarthak_defect_bot] R8 defect
+  [bot sarthak_defect_bot] done 9b167d67 returns={'sarthak_tft_bot': -0.125, 'sarthak_defect_bot': 0.625}
+  [bot sarthak_defect_bot] playing 76219978
+    [bot sarthak_defect_bot] R1 defect
+    [bot sarthak_defect_bot] R2 defect
+    [bot sarthak_defect_bot] R3 defect
+    [bot sarthak_defect_bot] R4 defect
+    [bot sarthak_defect_bot] R5 defect
+    [bot sarthak_defect_bot] R6 defect
+    [bot sarthak_defect_bot] R7 defect
+    [bot sarthak_defect_bot] R8 defect
+  [bot sarthak_defect_bot] done 76219978 returns={'sarthak_defect_bot': 1.25, 'sarthak_test_agent': -0.25}
+  [bot sarthak_defect_bot] playing ac605f96
+    [bot sarthak_defect_bot] R3 defect
+    [bot sarthak_defect_bot] R8 defect
+  [bot sarthak_defect_bot] done ac605f96 returns={'DeepSeek - RyVi': 1.25, 'sarthak_defect_bot': 2.75}
+  [bot sarthak_defect_bot] playing 455bdbcf
+    [bot sarthak_defect_bot] R6 defect
+  [bot sarthak_defect_bot] done 455bdbcf returns={'kogai-strat-2': 1.625, 'sarthak_defect_bot': 2.375}
+  [bot sarthak_defect_bot] tournament complete

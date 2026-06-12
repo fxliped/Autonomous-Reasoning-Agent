@@ -1,0 +1,117 @@
+{
+  "deepseek - ryvi": {
+    "name": "DeepSeek - RyVi",
+    "matches_played": 2,
+    "last_match_opp_moves": [
+      "cooperate",
+      "cooperate",
+      "cooperate",
+      "cooperate",
+      "cooperate",
+      "cooperate",
+      "cooperate",
+      "cooperate"
+    ],
+    "last_match_my_moves": [
+      "cooperate",
+      "cooperate",
+      "cooperate",
+      "cooperate",
+      "cooperate",
+      "cooperate",
+      "cooperate",
+      "cooperate"
+    ],
+    "history_summary": "",
+    "classification": "COOPERATOR",
+    "last_my_avg": 2.0,
+    "last_opp_avg": 2.0
+  },
+  "sayalee-test": {
+    "name": "sayalee-test",
+    "matches_played": 1,
+    "last_match_opp_moves": [
+      "cooperate",
+      "cooperate",
+      "cooperate",
+      "cooperate",
+      "cooperate",
+      "cooperate",
+      "cooperate",
+      "cooperate"
+    ],
+    "last_match_my_moves": [
+      "cooperate",
+      "cooperate",
+      "cooperate",
+      "cooperate",
+      "cooperate",
+      "cooperate",
+      "cooperate",
+      "cooperate"
+    ],
+    "history_summary": "",
+    "forgiveness_used": false,
+    "classification": "COOPERATOR",
+    "last_my_avg": 2.0,
+    "last_opp_avg": 2.0
+  },
+  "sarthak_defect_bot": {
+    "name": "sarthak_defect_bot",
+    "matches_played": 3,
+    "last_match_opp_moves": [
+      "defect",
+      "defect",
+      "defect",
+      "defect",
+      "defect",
+      "defect",
+      "defect",
+      "defect"
+    ],
+    "last_match_my_moves": [
+      "defect",
+      "defect",
+      "defect",
+      "defect",
+      "defect",
+      "defect",
+      "defect",
+      "defect"
+    ],
+    "history_summary": "",
+    "forgiveness_used": true,
+    "classification": "DEFECTOR",
+    "last_my_avg": 0.0,
+    "last_opp_avg": 0.0
+  },
+  "sarthak_tft_bot": {
+    "name": "sarthak_tft_bot",
+    "matches_played": 3,
+    "last_match_opp_moves": [
+      "cooperate",
+      "cooperate",
+      "cooperate",
+      "cooperate",
+      "cooperate",
+      "cooperate",
+      "defect",
+      "defect"
+    ],
+    "last_match_my_moves": [
+      "cooperate",
+      "cooperate",
+      "cooperate",
+      "cooperate",
+      "cooperate",
+      "defect",
+      "defect",
+      "defect"
+    ],
+    "history_summary": "",
+    "forgiveness_used": false,
+    "classification": "RECIPROCATOR",
+    "last_my_avg": 1.875,
+    "last_opp_avg": 1.125
+  }
+}

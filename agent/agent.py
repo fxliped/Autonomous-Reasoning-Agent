@@ -25,10 +25,6 @@ Use Action to call one of your available tools, then return PAUSE.
 Observation will be the result of that tool.
 """.strip()
 
-# Single source of truth for default models — used by both detect_provider() and LLMClient.
-_OPENAI_DEFAULT_MODEL = "gpt-4.1"
-_GEMINI_DEFAULT_MODEL = "gemini-2.5-flash"
-
 
 # =============================================================================
 # PROVIDER DETECTION
@@ -41,10 +37,10 @@ def detect_provider() -> tuple[str, str]:
     Returns (provider_name, default_model_name).
     """
     if os.getenv("OPENAI_API_KEY"):
-        return "openai", _OPENAI_DEFAULT_MODEL
+        return "openai", LLMClient.OPENAI_DEFAULT_MODEL
     gemini_key = os.getenv("gemeni_api_key") or os.getenv("GEMINI_API_KEY")
     if gemini_key:
-        return "gemini", _GEMINI_DEFAULT_MODEL
+        return "gemini", LLMClient.GEMINI_DEFAULT_MODEL
     raise ValueError(
         "No API key found. Set OPENAI_API_KEY (preferred) or GEMINI_API_KEY in your .env file."
     )
@@ -62,8 +58,8 @@ class LLMClient:
     messages format: [{"role": "user"|"assistant", "content": "..."}]
     """
 
-    OPENAI_DEFAULT_MODEL = _OPENAI_DEFAULT_MODEL
-    GEMINI_DEFAULT_MODEL = _GEMINI_DEFAULT_MODEL
+    OPENAI_DEFAULT_MODEL = "gpt-4o-mini"
+    GEMINI_DEFAULT_MODEL = "gemini-2.5-flash-lite"
 
     def __init__(self):
         self.provider, self.default_model = detect_provider()
@@ -72,8 +68,7 @@ class LLMClient:
     def _build_client(self):
         if self.provider == "openai":
             from openai import OpenAI
-            # 15s hard timeout — fast-fail so the platform's 30s round limit isn't blown
-            self._openai = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), timeout=15.0)
+            self._openai = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         elif self.provider == "gemini":
             from google import genai
             key = os.getenv("gemeni_api_key") or os.getenv("GEMINI_API_KEY")
@@ -93,13 +88,8 @@ class LLMClient:
                     return self._complete_gemini(system, messages, model)
             except Exception as exc:
                 if attempt < 2:
-                    exc_str = str(exc)
-                    # Rate limit: parse suggested wait time; else 1s
-                    import re as _re
-                    m = _re.search(r"try again in (\d+)ms", exc_str, _re.IGNORECASE)
-                    wait = (int(m.group(1)) / 1000 + 0.1) if m else 1.0
-                    print(f"  [API error, retrying in {wait:.1f}s ({attempt + 1}/3): {exc_str[:80]}]")
-                    time.sleep(wait)
+                    print(f"  [API error, retrying in 5s... ({attempt + 1}/3): {exc}]")
+                    time.sleep(5)
                 else:
                     raise
 
@@ -147,23 +137,14 @@ def reflection_path(game_name: str) -> Path:
     return REFLECTIONS_DIR / f"{safe_name}.md"
 
 
-def load_reflections(game_name: str, max_reflections: int = 8) -> str:
-    """Load the most recent N reflection entries for a game."""
+def load_reflections(game_name: str) -> str:
     path = reflection_path(game_name)
     if not path.exists():
         return ""
     content = path.read_text(encoding="utf-8").strip()
     if "No judged reflections yet." in content and "## Reflection" not in content:
         return ""
-    # Split on section headers and return the last max_reflections entries
-    import re as _re
-    sections = _re.split(r"(?=^## Reflection)", content, flags=_re.MULTILINE)
-    # First element may be the title line (# Game Reflections) — keep it, cap the rest
-    header = sections[0] if not sections[0].startswith("## Reflection") else ""
-    entries = [s for s in sections if s.startswith("## Reflection")]
-    recent = entries[-max_reflections:]
-    parts = ([header.strip()] if header.strip() else []) + recent
-    return "\n\n".join(parts).strip()
+    return content
 
 
 def append_reflection(
@@ -190,47 +171,14 @@ def append_reflection(
     return path
 
 
-def load_strategy_updates() -> str:
-    """Load the most recent strategy update from strategy_updates.md, if any."""
-    path = REFLECTIONS_DIR / "strategy_updates.md"
-    if not path.exists():
-        return ""
-    import re as _re
-    content = path.read_text(encoding="utf-8").strip()
-    # Return only the most recent update entry
-    sections = _re.split(r"(?=^## Strategy Update)", content, flags=_re.MULTILINE)
-    entries = [s for s in sections if s.startswith("## Strategy Update")]
-    return entries[-1].strip() if entries else ""
-
-
 def build_system_prompt(
     game_prompt: str,
     game_name: str | None = None,
     use_reflections: bool = True,
-    use_react: bool = True,
 ) -> str:
-    """
-    Assemble a system prompt from optional components.
-
-    use_react=True  (default): prepend BASE_REACT_PROMPT (Thought→Action→PAUSE→Observation loop).
-                               Use for game runners that dispatch tool calls between turns.
-    use_react=False:           omit BASE_REACT_PROMPT. Use for single-shot structured CoT agents
-                               (e.g. TournamentAgent) where no tool loop runs.
-
-    Injection order (when all present):
-      BASE_REACT_PROMPT → STRATEGY UPDATE → PRIOR REFLECTIONS → game_prompt
-    Strategy updates sit above per-match reflections so they frame how lessons are interpreted.
-    """
-    sections = []
-    if use_react:
-        sections.append(BASE_REACT_PROMPT)
+    """Combine shared ReAct instructions, game instructions, and prior reflections."""
+    sections = [BASE_REACT_PROMPT]
     if game_name and use_reflections:
-        strategy_update = load_strategy_updates()
-        if strategy_update:
-            sections.append(
-                "STRATEGY UPDATE (from post-tournament review — supersedes older defaults):\n"
-                f"{strategy_update}"
-            )
         reflections = load_reflections(game_name)
         if reflections:
             sections.append(
@@ -272,6 +220,42 @@ class Agent:
         result = self.client.complete(self.system, self.messages, self.model)
         self.messages.append({"role": "assistant", "content": result})
         return result
+
+    def generate_message(self, context: str, max_words: int = 50) -> str:
+        """
+        Generate a strategic message to send to the opponent.
+        The agent reasons about what to say given the game context,
+        then produces a message of at most max_words words.
+        The reasoning and message stay in conversation history so
+        the subsequent action phase can reference what was sent.
+        """
+        prompt = (
+            f"{context}\n\n"
+            f"You are about to send a message to your opponent (max {max_words} words). "
+            "Your message can be honest, strategic, or deceptive — you decide based on "
+            "the game state and history.\n\n"
+            "First, write your internal reasoning on lines starting with 'Thought:'.\n"
+            "Then, on a SEPARATE final line, write ONLY the message your opponent will see, "
+            f"starting with 'Message:' (max {max_words} words).\n\n"
+            "IMPORTANT: Your opponent will ONLY see the text after 'Message:'. "
+            "Do NOT include strategy reasoning in the Message line — that is private to your Thought."
+        )
+        result = self(prompt)
+        return self._parse_message(result or "", max_words)
+
+    @staticmethod
+    def _parse_message(response: str, max_words: int) -> str:
+        import re
+        match = re.search(r"Message:\s*(.+)", response, re.IGNORECASE)
+        if match:
+            text = match.group(1).strip()
+        else:
+            lines = [l.strip() for l in response.strip().splitlines() if l.strip()]
+            text = lines[-1] if lines else ""
+        words = text.split()
+        if len(words) > max_words:
+            words = words[:max_words]
+        return " ".join(words)
 
     def reset(self):
         """Clear conversation history (use between rounds or phases)."""

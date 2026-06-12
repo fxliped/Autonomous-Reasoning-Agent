@@ -1,0 +1,19 @@
+run_id,date,time,opponent,my_avg,opp_avg,margin,result,classification,n_rounds,my_defect_count,opp_defect_count,mutual_coop_rounds,i_got_suckered,i_exploited_them,move_window_misses,my_first_move,opp_first_move,my_moves,opp_moves
+c2947511,2026-06-04,15:58:37,liars dice test B,1.625,2.375,-0.75,L,EXPLOITER,8,0,1,7,1,0,0,cooperate,cooperate,cooperate|cooperate|cooperate|cooperate|cooperate|cooperate|cooperate|cooperate,cooperate|cooperate|cooperate|cooperate|cooperate|cooperate|cooperate|defect
+2abddf25,2026-06-04,16:02:26,AgenticArchitects,2.0,2.0,0.0,T,COOPERATOR,8,0,0,8,0,0,0,cooperate,cooperate,cooperate|cooperate|cooperate|cooperate|cooperate|cooperate|cooperate|cooperate,cooperate|cooperate|cooperate|cooperate|cooperate|cooperate|cooperate|cooperate
+f0fef248,2026-06-04,16:04:22,Tit4Tat-Agent,2.0,2.0,0.0,T,COOPERATOR,8,0,0,8,0,0,0,cooperate,cooperate,cooperate|cooperate|cooperate|cooperate|cooperate|cooperate|cooperate|cooperate,cooperate|cooperate|cooperate|cooperate|cooperate|cooperate|cooperate|cooperate
+178775a7,2026-06-04,16:06:39,koconnor_test,2.0,2.0,0.0,T,COOPERATOR,8,0,0,8,0,0,0,cooperate,cooperate,cooperate|cooperate|cooperate|cooperate|cooperate|cooperate|cooperate|cooperate,cooperate|cooperate|cooperate|cooperate|cooperate|cooperate|cooperate|cooperate
+24f0e88e,2026-06-04,16:10:34,DeepSeek - RyVi,3.125,-0.625,3.75,W,DEFECTOR,8,8,3,0,0,5,0,defect,cooperate,defect|defect|defect|defect|defect|defect|defect|defect,cooperate|cooperate|cooperate|defect|cooperate|cooperate|defect|defect
+572810e6,2026-06-04,16:17:52,Amber-Agent2,-0.375,1.875,-2.25,L,DEFECTOR,8,5,8,0,3,0,2,cooperate,defect,cooperate|cooperate|defect|defect|defect|defect|defect|cooperate,defect|defect|defect|defect|defect|defect|defect|defect
+4e308838,2026-06-04,16:46:26,liars dice test B,1.0,-0.2,1.2,W,EXPLOITER,5,5,4,0,0,1,0,defect,cooperate,defect|defect|defect|defect|defect,cooperate|defect|defect|defect|defect
+685ff706,2026-06-04,16:48:37,DeepSeek - RyVi,0.0,0.0,0.0,T,DEFECTOR,5,5,5,0,0,0,0,defect,defect,defect|defect|defect|defect|defect,defect|defect|defect|defect|defect
+3c473b43,2026-06-04,16:51:31,AgenticArchitects,1.4,2.6,-1.2,L,EXPLOITER,5,0,1,4,1,0,0,cooperate,cooperate,cooperate|cooperate|cooperate|cooperate|cooperate,cooperate|cooperate|cooperate|cooperate|defect
+20a03df8,2026-06-04,16:52:52,koconnor_test,0.6,1.8,-1.2,L,DEFECTOR,5,3,4,0,2,1,0,cooperate,defect,cooperate|defect|cooperate|defect|defect,defect|cooperate|defect|defect|defect
+427e8d92,2026-06-04,16:54:42,Amber-Agent2,1.8,0.6,1.2,W,DEFECTOR,5,3,2,2,0,1,2,cooperate,cooperate,cooperate|defect|cooperate|defect|defect,cooperate|cooperate|cooperate|defect|defect
+8b0c9564,2026-06-04,16:59:30,Tit4Tat-Agent,-0.2,1.0,-1.2,L,DEFECTOR,5,4,5,0,1,0,0,cooperate,defect,cooperate|defect|defect|defect|defect,defect|defect|defect|defect|defect
+47778519,2026-06-04,17:13:15,DeepSeek - RyVi,0.0,0.0,0.0,T,DEFECTOR,5,5,5,0,0,0,0,defect,defect,defect|defect|defect|defect|defect,defect|defect|defect|defect|defect
+fb399304,2026-06-04,17:15:32,Tit4Tat-Agent,0.0,0.0,0.0,T,DEFECTOR,5,5,5,0,0,0,0,defect,defect,defect|defect|defect|defect|defect,defect|defect|defect|defect|defect
+6ec12d1e,2026-06-04,17:17:19,AgenticArchitects,1.0,-0.2,1.2,W,DEFECTOR,5,5,4,0,0,1,0,defect,cooperate,defect|defect|defect|defect|defect,cooperate|defect|defect|defect|defect
+56aae211,2026-06-04,17:19:06,koconnor_test,0.0,0.0,0.0,T,DEFECTOR,5,5,5,0,0,0,0,defect,defect,defect|defect|defect|defect|defect,defect|defect|defect|defect|defect
+67ba29e8,2026-06-04,17:20:25,liars dice test B,1.0,-0.2,1.2,W,EXPLOITER,5,5,4,0,0,1,0,defect,cooperate,defect|defect|defect|defect|defect,cooperate|defect|defect|defect|defect
+61b14a75,2026-06-04,17:23:44,Amber-Agent2,1.6,1.6,0.0,T,DEFECTOR,5,2,2,2,1,1,2,cooperate,cooperate,cooperate|cooperate|defect|cooperate|defect,cooperate|cooperate|cooperate|defect|defect

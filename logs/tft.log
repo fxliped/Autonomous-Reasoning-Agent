@@ -1,0 +1,27 @@
+[bot sarthak_tft_bot] ready, strategy=tit_for_tat
+  [bot sarthak_tft_bot] joining queue 549e58d8
+  [bot sarthak_tft_bot] playing 9b167d67
+    [bot sarthak_tft_bot] R1 cooperate
+    [bot sarthak_tft_bot] R2 defect
+    [bot sarthak_tft_bot] R3 defect
+    [bot sarthak_tft_bot] R4 defect
+    [bot sarthak_tft_bot] R5 defect
+    [bot sarthak_tft_bot] R6 defect
+    [bot sarthak_tft_bot] R7 defect
+    [bot sarthak_tft_bot] R8 defect
+  [bot sarthak_tft_bot] done 9b167d67 returns={'sarthak_tft_bot': -0.125, 'sarthak_defect_bot': 0.625}
+  [bot sarthak_tft_bot] playing 266e2360
+    [bot sarthak_tft_bot] R4 cooperate
+    [bot sarthak_tft_bot] R5 cooperate
+    [bot sarthak_tft_bot] R7 cooperate
+    [bot sarthak_tft_bot] R8 cooperate
+  [bot sarthak_tft_bot] done 266e2360 returns={'sarthak_tft_bot': 2.0, 'sarthak_test_agent': 2.0}
+  [bot sarthak_tft_bot] playing 9bd0e6b4
+    [bot sarthak_tft_bot] R1 cooperate
+    [bot sarthak_tft_bot] R5 cooperate
+  [bot sarthak_tft_bot] done 9bd0e6b4 returns={'kogai-strat-2': 2.0, 'sarthak_tft_bot': 2.0}
+  [bot sarthak_tft_bot] playing 61f581c4
+    [bot sarthak_tft_bot] R1 cooperate
+    [bot sarthak_tft_bot] R6 cooperate
+  [bot sarthak_tft_bot] done 61f581c4 returns={'DeepSeek - RyVi': 2.0, 'sarthak_tft_bot': 2.0}
+  [bot sarthak_tft_bot] tournament complete
